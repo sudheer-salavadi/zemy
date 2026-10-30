@@ -3,11 +3,12 @@ import CoreImage
 
 /// Curated palettes; Shuffle stays inside the chosen one.
 enum MeshScheme: String, CaseIterable, Identifiable {
-    case aurora = "Aurora", sunset = "Sunset", ocean = "Ocean", candy = "Candy", forest = "Forest", ember = "Ember", mono = "Mono", any = "Any"
+    case calm = "Calm", aurora = "Aurora", sunset = "Sunset", ocean = "Ocean", candy = "Candy", forest = "Forest", ember = "Ember", mono = "Mono", any = "Any"
     var id: Self { self }
     /// Hex colours; `.any` generates analogous hues on the fly.
     var hex: [String] {
         switch self {
+        case .calm: ["1E2140", "2A3060", "3B4079", "2F6672", "54498F", "171A30"]
         case .aurora: ["0B3D91", "1FA2A6", "34D399", "7C3AED", "22D3EE", "6366F1"]
         case .sunset: ["FF6B6B", "FF9F43", "FECA57", "EE5A9B", "8C52FF", "FF7A59"]
         case .ocean: ["03256C", "1E5EFF", "2EC5FF", "8BE9FD", "0FA3B1", "E0F7FF"]
@@ -27,13 +28,13 @@ final class MeshModel {
     var points: [SIMD2<Float>] = (0..<9).map { SIMD2(Float($0 % 3) / 2, Float($0 / 3) / 2) }
     var colors: [Color] = []
     var selected: Int? = 4
-    var grain = 0.12
+    var grain = 0.06
     var smooth = true
-    var scheme = MeshScheme.aurora
+    var scheme = MeshScheme.calm
 
     /// A calm, deterministic default; Shuffle randomises from there.
     init() {
-        let p = MeshScheme.aurora.palette
+        let p = MeshScheme.calm.palette
         colors = [p[0], p[5], p[3], p[1], p[2], p[0], p[4], p[1], p[5]]
         points[4] = SIMD2(0.42, 0.56)
         points[1] = SIMD2(0.6, 0)

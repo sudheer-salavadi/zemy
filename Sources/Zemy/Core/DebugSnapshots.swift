@@ -53,6 +53,25 @@ extension AppState {
             try? await Task.sleep(for: .seconds(1.5))
             if ProcessInfo.processInfo.environment["ZEMY_TEXT"] != nil { showcase.addText() }
             if ProcessInfo.processInfo.environment["ZEMY_DORENAME"] != nil { rename.apply(); print("rename result:", rename.message ?? "nil") }
+            if let st = ProcessInfo.processInfo.environment["ZEMY_STYLE"].flatMap(StoreStyle.init(rawValue:)) { store.style = st }
+            if let dev = ProcessInfo.processInfo.environment["ZEMY_DEVICE"].flatMap(StoreDevice.init(rawValue:)) { store.device = dev }
+            if ProcessInfo.processInfo.environment["ZEMY_GERMAN"] != nil {
+                store.addLocale("de-DE")
+                store.pages[0].captions["de-DE"] = .init(headline: "Musik, die dich bewegt", sub: "Wunderschöne Wiedergabe auf jedem Gerät")
+            }
+            if let out = ProcessInfo.processInfo.environment["ZEMY_STOREEXPORT"] {
+                let dir = await store.export(to: URL(fileURLWithPath: out))
+                print("store export:", store.message ?? "", "→", dir.path)
+            }
+            if let out = ProcessInfo.processInfo.environment["ZEMY_SHOWCASEEXPORT"] {
+                for (n, l) in ShowcaseModel.Layout.allCases.enumerated() {
+                    showcase.arrange(l)
+                    if let img = ShowcaseArt.render(showcase)?.flattened(), let png = PNG.encode(img, colors: 0) {
+                        try? png.write(to: URL(fileURLWithPath: "\(out)/\(String(format: "%02d", n + 1)) Showcase – \(l.rawValue).png"))
+                    }
+                }
+                showcase.arrange(.hero)
+            }
             if let l = ProcessInfo.processInfo.environment["ZEMY_LAYOUT"].flatMap(ShowcaseModel.Layout.init(rawValue:)) { showcase.arrange(l) }
             if ProcessInfo.processInfo.environment["ZEMY_SAVE"] != nil { showcase.arrange(.fan); showcase.saveCurrent(as: "Test fan") }
             if ProcessInfo.processInfo.environment["ZEMY_SCROLL"] != nil { showcase.selected = nil }

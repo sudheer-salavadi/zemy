@@ -8,6 +8,9 @@ enum ShowcaseSamples {
         render(Dashboard(), CGSize(width: 1200, height: 780)),
     ].compactMap { $0 }
 
+    /// Portrait iPad screen for the App Store tool's example.
+    @MainActor static let padDashboard: CGImage? = render(Dashboard(), CGSize(width: 1032, height: 1376))
+
     @MainActor private static func render(_ view: some View, _ size: CGSize) -> CGImage? {
         let r = ImageRenderer(content: view.frame(width: size.width, height: size.height).environment(\.colorScheme, .light))
         r.scale = 2

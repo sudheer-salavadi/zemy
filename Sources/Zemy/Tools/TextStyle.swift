@@ -12,8 +12,8 @@ struct TextStyle: Equatable {
 
     var text = "Your headline"
     var family = "Avenir Next"
-    var member = "AvenirNext-Heavy"
-    var size = 110.0
+    var member = "AvenirNext-Bold"
+    var size = 96.0
     var tracking = -1.5
     var lineSpacing = 0.0
     var align = Align.center
@@ -23,9 +23,9 @@ struct TextStyle: Equatable {
     var angle = 90.0
     var stroke = 0.0
     var strokeColor = Color.black
-    var shadowRadius = 24.0
+    var shadowRadius = 0.0
     var shadowX = 0.0
-    var shadowY = 8.0
+    var shadowY = 0.0
     var shadowColor = Color.black.opacity(0.3)
 
     static let presets: [(name: String, apply: (inout TextStyle) -> Void)] = [

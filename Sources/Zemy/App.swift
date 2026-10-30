@@ -41,7 +41,7 @@ struct ZemyApp: App {
 // MARK: - Tools
 
 enum Tool: String, CaseIterable, Identifiable {
-    case showcase, svg, icons, favicon, compress, convert, rename, background, colors
+    case showcase, appstore, svg, icons, favicon, compress, convert, rename, background, colors
 
     var id: Self { self }
     var title: String {
@@ -53,6 +53,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .colors: "Color Picker"
         case .svg: "SVG Studio"
         case .showcase: "Showcase"
+        case .appstore: "App Store"
         case .icons: "App Icons"
         case .favicon: "Favicon"
         }
@@ -66,6 +67,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .colors: "Sample, palette, contrast"
         case .svg: "Paste, preview, rasterize"
         case .showcase: "Screenshots, type & gradients for web and social"
+        case .appstore: "iPhone & iPad screenshot sets in every language"
         case .icons: "macOS, iOS & Android sets"
         case .favicon: "Browser icons, previewed in real tabs"
         }
@@ -79,6 +81,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .colors: "eyedropper.halffull"
         case .svg: "scribble.variable"
         case .showcase: "rectangle.on.rectangle.angled"
+        case .appstore: "apps.iphone"
         case .icons: "app.badge"
         case .favicon: "globe"
         }
@@ -92,15 +95,16 @@ enum Tool: String, CaseIterable, Identifiable {
         case .colors: .pink
         case .svg: .yellow
         case .showcase: .mint
+        case .appstore: .indigo
         case .icons: .red
         case .favicon: .cyan
         }
     }
     var isBatch: Bool { [.compress, .convert].contains(self) }
-    var takesImage: Bool { isBatch || [.background, .colors, .icons, .favicon, .showcase].contains(self) }
+    var takesImage: Bool { isBatch || [.background, .colors, .icons, .favicon, .showcase, .appstore].contains(self) }
 
     static let groups: [(String, [Tool])] = [
-        ("Create", [.showcase, .svg, .icons, .favicon]),
+        ("Create", [.showcase, .appstore, .svg, .icons, .favicon]),
         ("Batch", [.compress, .convert, .rename]),
         ("Inspect & Edit", [.background, .colors]),
     ]
@@ -125,17 +129,18 @@ final class AppState {
     let colors = ColorModel()
     let svg = SVGModel()
     let showcase = ShowcaseModel()
+    let store = StoreModel()
     let icons = IconModel()
     let favicon = FaviconModel()
     let rename = RenameModel()
 
     func open(_ urls: [URL]) {
         if tool == .rename { rename.add(urls); return }
-        if tool == .showcase {
-            let files = Inbox.expand(urls)
+        if tool == .showcase || tool == .appstore {
+            let files = Inbox.expand(urls), target = tool
             Task.detached {
                 let images = files.compactMap { (try? Data(contentsOf: $0)).flatMap(ImageIOKit.load)?.image }
-                await MainActor.run { self.showcase.add(images) }
+                await MainActor.run { target == .showcase ? self.showcase.add(images) : self.store.add(images) }
             }
             return
         }
@@ -165,6 +170,7 @@ final class AppState {
             batch.add([url])
         }
         if target == .showcase { showcase.add([img]) }
+        if target == .appstore { store.add([img]) }
         tool = target
     }
 
@@ -232,6 +238,7 @@ struct ContentView: View {
         case .colors: ColorToolView(model: state.colors)
         case .svg: SVGToolView(model: state.svg)
         case .showcase: ShowcaseToolView(model: state.showcase)
+        case .appstore: AppStoreToolView(model: state.store)
         case .icons: IconToolView(model: state.icons)
         case .favicon: FaviconToolView(model: state.favicon)
         case .rename: RenameToolView(model: state.rename)

@@ -19,7 +19,7 @@ enum CanvasPresets {
         ("YouTube", [("Thumbnail", 1280, 720), ("Channel banner", 2560, 1440)]),
         ("Pinterest", [("Standard pin", 1000, 1500)]),
         ("Threads", [("Post", 1080, 1350)]),
-        ("Dribbble", [("Shot", 1600, 1200)]),
+        ("App Store", [("iPhone 6.9″", 1320, 2868), ("iPhone 6.3″", 1206, 2622), ("iPad 13″", 2064, 2752)]),
         ("Web", [("Open Graph / link preview", 1200, 630), ("Blog hero", 1920, 1080)]),
         ("Wallpaper", [("Full HD", 1920, 1080), ("4K", 3840, 2160), ("MacBook", 3024, 1964), ("iPhone", 1290, 2796)]),
         ("Slides", [("16:9", 1920, 1080), ("4:3", 1600, 1200)]),

@@ -6,7 +6,7 @@ final class ShowcaseModel {
     enum Background: String, CaseIterable, Identifiable { case none = "None", color = "Color", mesh = "Mesh", image = "Image"; var id: Self { self } }
     enum Frame: String, CaseIterable, Identifiable { case none = "None", window = "Window", browser = "Browser"; var id: Self { self } }
     enum Layout: String, CaseIterable, Identifiable {
-        case cascade = "Cascade", fan = "Fan", row = "Side by side", bleed = "Bleed", hero = "Hero", stack = "Stack", scatter = "Scatter"
+        case hero = "Hero", split = "Split", row = "Side by side", cascade = "Cascade", fan = "Fan", stack = "Stack", bleed = "Bleed", scatter = "Scatter"
         var id: Self { self }
     }
     enum Order { case front, forward, backward, back }
@@ -36,10 +36,10 @@ final class ShowcaseModel {
 
     var layers: [Layer] = []
     var selected: UUID?
-    var arrangement = Arrangement.builtIn(.cascade)
+    var arrangement = Arrangement.builtIn(.hero)
     var seed: UInt64 = 7
-    var width = 1600.0
-    var height = 1200.0
+    var width = 1920.0
+    var height = 1080.0
     var frame = Frame.window
     var darkChrome = false
     var shadow = 0.7
@@ -55,18 +55,27 @@ final class ShowcaseModel {
 
     /// A ready-made composition so first-time users see what Showcase does.
     func loadSample() {
-        layers = ShowcaseSamples.images.map { Layer(image: $0, isSample: true) }
+        layers = ShowcaseSamples.images.map { Layer(image: $0, corner: Self.corner(for: $0), isSample: true) }
         var headline = TextStyle()
         headline.text = "Ship it beautifully."
-        headline.size = 84
-        var t = Layer(text: headline, isSample: true)
-        t.textSize = TextArt.measure(headline)
-        t.width = t.textSize.width / width
-        t.center = CGPoint(x: 0.5, y: 0.1)
-        layers.append(t)
+        var sub = TextStyle()
+        sub.text = "Compose screenshots, type and gradients in seconds."
+        sub.member = "AvenirNext-Medium"; sub.size = 40; sub.tracking = 0; sub.color1 = .white.opacity(0.78)
+        for style in [headline, sub] {
+            var t = Layer(text: style, isSample: true)
+            t.textSize = TextArt.measure(style)
+            t.width = t.textSize.width / width
+            layers.append(t)
+        }
         arrange(.hero)
         selected = nil
     }
+
+    /// Phones get phone-like rounding; desktop/web shots get a subtle window radius.
+    static func corner(for img: CGImage) -> Double { img.height > img.width ? 0.11 : 0.018 }
+
+    /// Window chrome (traffic lights) only makes sense on landscape, desktop-style shots.
+    func hasChrome(_ img: CGImage) -> Bool { frame != .none && img.height < img.width }
 
     func clearSample() {
         layers.removeAll(where: \.isSample)
@@ -77,7 +86,7 @@ final class ShowcaseModel {
     var barRatio: Double { frame == .none ? 0 : 0.045 }
     /// Layer height as a fraction of its own width.
     func aspect(_ l: Layer) -> Double {
-        if let img = l.image { return Double(img.height) / Double(img.width) + barRatio }
+        if let img = l.image { return Double(img.height) / Double(img.width) + (hasChrome(img) ? barRatio : 0) }
         return l.textSize.height / l.textSize.width
     }
     var selectedIndex: Int? { layers.firstIndex { $0.id == selected } }
@@ -89,7 +98,7 @@ final class ShowcaseModel {
         if showsSample { clearSample() } // your screenshots replace the example
         // New screenshots go below existing text so headlines stay on top.
         let firstText = layers.firstIndex(where: \.isText) ?? layers.count
-        layers.insert(contentsOf: images.map { Layer(image: $0) }, at: firstText)
+        layers.insert(contentsOf: images.map { Layer(image: $0, corner: Self.corner(for: $0)) }, at: firstText)
         relayout()
         selected = layers[firstText + images.count - 1].id
     }
@@ -101,6 +110,7 @@ final class ShowcaseModel {
         l.center = CGPoint(x: 0.5, y: layers.contains { !$0.isText } ? 0.14 : 0.5)
         layers.append(l)
         selected = l.id
+        relayout() // new text joins the layout's text block
     }
 
     /// Applies an edited text style, keeping the on-canvas scale the user chose.
@@ -109,6 +119,7 @@ final class ShowcaseModel {
         layers[i].text = s
         layers[i].textSize = TextArt.measure(s)
         layers[i].width = layers[i].textSize.width * scale / width
+        if case .builtIn = arrangement { relayout() }
     }
 
     func reorder(_ op: Order) {
@@ -163,55 +174,139 @@ final class ShowcaseModel {
         arrange(.scatter)
     }
 
-    /// Positions screenshots for a layout (text layers stay put); also feeds the live thumbnails.
+    /// Designer layout engine: reserves a text zone (headline + subheadline stacked with clear hierarchy),
+    /// builds the screenshot group at a consistent scale, then fits the whole group into the remaining
+    /// area with even safe margins. Also feeds the live thumbnails, so it must stay pure.
     func arranged(_ layout: Layout) -> [Layer] {
         var out = layers
+        let W = width, H = height, m = 0.07 * min(W, H)
         let shots = out.indices.filter { !out[$0].isText }
-        let n = shots.count
-        guard n > 0 else { return out }
-        let canvas = height / width
-        func fit(_ i: Int, _ w: Double, _ maxH: Double) -> Double { min(w, maxH * canvas / aspect(out[i])) }
-        func t(_ k: Int) -> Double { n == 1 ? 0.5 : Double(k) / Double(n - 1) }
-        var rng = SplitMix(seed: seed)
+        let texts = out.indices.filter { out[$0].isText }
+        let split = layout == .split && !shots.isEmpty
+        var area = CGRect(x: m, y: m, width: W - 2 * m, height: H - 2 * m)
 
-        for (k, i) in shots.enumerated() {
-            out[i].rotation = 0
-            switch layout {
-            case .cascade:
-                out[i].width = fit(i, n == 1 ? 0.7 : 0.6, 0.7)
-                out[i].center = CGPoint(x: 0.5 + (t(k) - 0.5) * (n == 1 ? 0 : 0.3), y: 0.5 + (t(k) - 0.5) * (n == 1 ? 0 : 0.26))
-            case .fan:
-                out[i].width = fit(i, n == 1 ? 0.6 : 0.46, 0.68)
-                out[i].center = CGPoint(x: 0.5 + (t(k) - 0.5) * (n == 1 ? 0 : 0.46), y: 0.52 + abs(t(k) - 0.5) * 0.14)
-                out[i].rotation = n == 1 ? 0 : (t(k) - 0.5) * 24
-            case .row:
-                let gap = 0.035, w = (0.9 - gap * Double(n - 1)) / Double(n)
-                out[i].width = fit(i, w, 0.82)
-                out[i].center = CGPoint(x: 0.05 + w / 2 + Double(k) * (w + gap), y: 0.5)
-            case .bleed:
-                // Big, tilted shots sliding in from the bottom right and running off the canvas.
-                out[i].width = fit(i, n == 1 ? 0.7 : 0.5, 1.05)
-                out[i].center = CGPoint(x: n == 1 ? 0.62 : 0.34 + 0.42 * t(k), y: n == 1 ? 0.7 : 0.8 - 0.14 * t(k))
-                out[i].rotation = -7
-            case .hero:
-                if k == n - 1 {
-                    out[i].width = fit(i, 0.6, 0.7)
-                    out[i].center = CGPoint(x: 0.5, y: 0.56)
-                } else {
-                    let spots: [CGPoint] = [.init(x: 0.2, y: 0.66), .init(x: 0.8, y: 0.34), .init(x: 0.18, y: 0.3), .init(x: 0.82, y: 0.7)]
-                    out[i].width = fit(i, 0.32, 0.44)
-                    out[i].center = spots[k % spots.count]
-                }
-            case .stack:
-                let depth = Double(n - 1 - k)
-                out[i].width = fit(i, 0.6 - depth * 0.05, 0.7 - depth * 0.05)
-                out[i].center = CGPoint(x: 0.5, y: 0.56 - depth * 0.06)
-            case .scatter:
-                out[i].width = fit(i, 0.42, 0.56)
-                out[i].center = CGPoint(x: rng.next(0.27...0.73), y: rng.next(0.3...0.7))
-                out[i].rotation = rng.next(-14...14)
+        // 1. Text block: stacked in z-order, centred on top (or left-aligned in a column for Split).
+        if !texts.isEmpty {
+            let colW = split ? area.width * 0.4 : area.width * 0.84
+            var ws = texts.map { min(out[$0].width * W, colW) }
+            var hs = zip(texts, ws).map { $1 * aspect(out[$0]) }
+            let gap = H * 0.02
+            var block = hs.reduce(0, +) + gap * Double(texts.count - 1)
+            let maxBlock = split ? area.height : H * 0.3
+            if block > maxBlock {
+                let k = maxBlock / block
+                ws = ws.map { $0 * k }; hs = hs.map { $0 * k }; block = maxBlock
+            }
+            var y = split ? (H - block) / 2 : m
+            for (j, i) in texts.enumerated() {
+                out[i].width = ws[j] / W
+                out[i].rotation = 0
+                out[i].text?.align = split ? .leading : .center
+                out[i].center = CGPoint(x: (split ? m + ws[j] / 2 : W / 2) / W, y: (y + hs[j] / 2) / H)
+                y += hs[j] + gap
+            }
+            if split {
+                let left = m + colW + m * 0.8
+                area = CGRect(x: left, y: m, width: W - left - m, height: H - 2 * m)
+            } else if !shots.isEmpty {
+                let top = m + block + H * 0.055
+                area = CGRect(x: m, y: top, width: W - 2 * m, height: H - top - m)
             }
         }
+        guard !shots.isEmpty else { return out }
+
+        // 2. Build the group in abstract units (height 1 = a hero-sized device).
+        struct Item { var k: Int; var x, y, h, rot: Double }
+        let n = shots.count
+        let asp = shots.map { aspect(out[$0]) }          // height ÷ width
+        func w(_ it: Item) -> Double { it.h / asp[it.k] }
+        let landscape = (0..<n).filter { asp[$0] < 1 }
+        var items: [Item] = []
+        var order = Array(0..<n)                          // back → front
+        var rng = SplitMix(seed: seed)
+
+        switch layout {
+        case .hero, .split:
+            if let p = landscape.first {
+                // Desktop as the anchor; phones overlap its lower corners, bottoms aligned below it.
+                items.append(Item(k: p, x: 0, y: 0, h: 1, rot: 0))
+                let pw = 1 / asp[p]
+                let others = (0..<n).filter { $0 != p }
+                for (j, k) in others.enumerated() {
+                    let tier = Double(j / 2), side: Double = j % 2 == 0 ? 1 : -1
+                    let h = 0.8 * (1 - 0.08 * tier), pwk = h / asp[k]
+                    items.append(Item(k: k, x: side * (pw / 2 - pwk * 0.12 + tier * pwk * 0.6), y: 0.5 + 0.08 - h / 2, h: h, rot: 0))
+                }
+                order = [p] + others.reversed()
+            } else {
+                // All phones: the middle one leads, the rest tuck in behind at either side.
+                let c = n / 2
+                let cw = 1 / asp[c]
+                items.append(Item(k: c, x: 0, y: 0, h: 1, rot: 0))
+                let others = (0..<n).filter { $0 != c }
+                for (j, k) in others.enumerated() {
+                    let tier = Double(j / 2 + 1), side: Double = j % 2 == 0 ? 1 : -1
+                    let h = 1 - 0.12 * tier
+                    items.append(Item(k: k, x: side * cw * 0.62 * tier, y: 0.04 * tier, h: h, rot: 0))
+                }
+                order = others.reversed() + [c]
+            }
+        case .row:
+            var x = 0.0
+            for k in 0..<n {
+                let it = Item(k: k, x: 0, y: 0, h: 1, rot: 0)
+                items.append(Item(k: k, x: x + w(it) / 2, y: 0, h: 1, rot: 0))
+                x += w(it) + 0.08
+            }
+        case .cascade, .bleed:
+            let step = (0..<n).map { 1 / asp[$0] }.reduce(0, +) / Double(n) * 0.3
+            for k in 0..<n {
+                items.append(Item(k: k, x: Double(k) * step, y: Double(k) * 0.14, h: 1, rot: layout == .bleed ? -8 : 0))
+            }
+        case .fan:
+            let spread = n == 1 ? 0 : min(8.0 + 3 * Double(n - 2), 20) * .pi / 180
+            let r = 2.8
+            for k in 0..<n {
+                let t = n == 1 ? 0 : Double(k) / Double(n - 1) * 2 - 1
+                let a = t * spread
+                items.append(Item(k: k, x: r * sin(a), y: r * (1 - cos(a)), h: 1, rot: a * 180 / .pi))
+            }
+            order = (0..<n).sorted { abs(Double($0) - Double(n - 1) / 2) > abs(Double($1) - Double(n - 1) / 2) }
+        case .stack:
+            for k in 0..<n {
+                let d = Double(n - 1 - k)
+                items.append(Item(k: k, x: -0.16 * d, y: -0.1 * d, h: pow(0.88, d), rot: 0)) // each card peeks out up-left
+            }
+        case .scatter:
+            for k in 0..<n {
+                items.append(Item(k: k, x: rng.next(-1.2...1.2), y: rng.next(-0.6...0.6), h: 1, rot: rng.next(-12...12)))
+            }
+        }
+
+        // 3. Fit the group's rotated bounding box into the area (Bleed deliberately overflows bottom-right).
+        var lo = CGPoint(x: Double.infinity, y: Double.infinity), hi = CGPoint(x: -Double.infinity, y: -Double.infinity)
+        for it in items {
+            let r = it.rot * .pi / 180, iw = w(it)
+            let hx = (iw * abs(cos(r)) + it.h * abs(sin(r))) / 2, hy = (iw * abs(sin(r)) + it.h * abs(cos(r))) / 2
+            lo = CGPoint(x: min(lo.x, it.x - hx), y: min(lo.y, it.y - hy))
+            hi = CGPoint(x: max(hi.x, it.x + hx), y: max(hi.y, it.y + hy))
+        }
+        let target = layout == .bleed
+            ? CGRect(x: area.minX + area.width * 0.2, y: area.minY + area.height * 0.08, width: area.width * 1.0, height: area.height * 1.45)
+            : area.insetBy(dx: area.width * 0.02, dy: area.height * 0.02)
+        let bw = hi.x - lo.x, bh = hi.y - lo.y
+        let k = min(target.width / bw, target.height / bh)
+        let tx = target.midX - (lo.x + bw / 2) * k, ty = target.midY - (lo.y + bh / 2) * k
+        for it in items {
+            let i = shots[it.k]
+            out[i].center = CGPoint(x: (it.x * k + tx) / W, y: (it.y * k + ty) / H)
+            out[i].width = w(it) * k / W
+            out[i].rotation = it.rot
+        }
+
+        // 4. Stacking order for this layout (text keeps its slots, so it stays on top).
+        let restacked = order.map { out[shots[$0]] }
+        for (slot, layer) in zip(shots, restacked) { out[slot] = layer }
         return out
     }
 
@@ -281,7 +376,7 @@ struct ShotView: View {
     var body: some View {
         let r = width * corner
         VStack(spacing: 0) {
-            if m.frame != .none { ChromeBar(m: m, height: width * m.barRatio) }
+            if m.hasChrome(image) { ChromeBar(m: m, height: width * m.barRatio) }
             Image(decorative: image, scale: 1).resizable().interpolation(.high)
                 .frame(width: width, height: width * CGFloat(image.height) / CGFloat(image.width))
         }
@@ -444,7 +539,7 @@ private struct ShowcaseEditor: View {
     private func update(_ id: UUID, _ change: (inout ShowcaseModel.Layer) -> Void) {
         guard let i = m.layers.firstIndex(where: { $0.id == id }) else { return }
         change(&m.layers[i])
-        if !m.layers[i].isText { m.arrangement = .manual }
+        m.arrangement = .manual
     }
 }
 

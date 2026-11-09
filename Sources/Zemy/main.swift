@@ -1,0 +1,3 @@
+import ZemyKit
+
+ZemyApp.main()

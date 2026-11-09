@@ -1,15 +1,14 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-@main
-struct ZemyApp: App {
+public struct ZemyApp: App {
     @State private var state = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @AppStorage("clipboard.menubar") private var showMenuBar = true
 
-    init() { NSApplication.shared.setActivationPolicy(.regular) }
+    public init() { NSApplication.shared.setActivationPolicy(.regular) }
 
-    var body: some Scene {
+    public var body: some Scene {
         WindowGroup("Zemy", id: "main") {
             ContentView()
                 .environment(state)

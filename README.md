@@ -4,7 +4,7 @@
 
 <h1 align="center">Zemy</h1>
 <p align="center"><b>The designer's swiss knife for macOS.</b><br>
-Showcase screenshots, make App Store screenshot sets, compress and convert images, rename files, remove backgrounds, pick colors and make icons, all on your Mac, with nothing uploaded.</p>
+Showcase screenshots, make App Store screenshot sets, keep a clipboard history, compress and convert images, rename files, remove backgrounds, pick colors and make icons, all on your Mac, with nothing uploaded.</p>
 
 <p align="center">
   <a href="../../releases/latest"><b>⬇︎ Download the latest release</b></a>
@@ -26,6 +26,7 @@ Showcase screenshots, make App Store screenshot sets, compress and convert image
 | | **Batch Rename** | Edit existing names (prefix, suffix, trim, find & replace, case styles) or build new ones from tokens like `{n}`, `{date}`, `{w}x{h}`. Live preview, conflict checks and Undo. |
 | **Inspect & Edit** | **Remove Background** | On-device subject lift with transparent, color or blurred backgrounds, outline, shadow and crop. |
 | | **Color Picker** | Sample from an image or anywhere on screen. HEX, RGB, HSL, CMYK, OKLCH, SwiftUI and Android values, tints and shades, WCAG contrast, image palettes. |
+| **Utilities** | **Clipboard** | Keeps your last 10 copies (text, links, images, files), one click away from the **Dock menu**, the **menu bar** or the app. Pin favourites, send images to other tools, open copied SVG in SVG Studio. Skips password-manager copies; history stays on your Mac. |
 
 ![App Store: screenshot sets for iPhone and iPad in every language](docs/appstore.png)
 
@@ -38,9 +39,9 @@ Showcase screenshots, make App Store screenshot sets, compress and convert image
 
 1. Download **`Zemy-x.y.zip`** from the [latest release](../../releases/latest) and unzip it.
 2. Drag **Zemy.app** into your **Applications** folder.
-3. **First launch only:** Zemy is free and open source, and it isn't signed with a paid Apple Developer certificate, so macOS will say it *"cannot check it for malicious software"*. To open it:
-   - **Right-click** (or Control-click) Zemy in Applications → **Open** → **Open**, or
-   - open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
+3. **First launch only:** Zemy isn't notarized by Apple yet, so macOS says *"Apple could not verify “Zemy.app” is free of malware"*. Click **Done** (not *Move to Trash*), then either:
+   - open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**, or
+   - run this in Terminal: `xattr -dr com.apple.quarantine /Applications/Zemy.app`
 
    macOS remembers this, so you only do it once.
 

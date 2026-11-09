@@ -36,6 +36,20 @@ extension AppState {
             }
             return
         }
+        if ProcessInfo.processInfo.environment["ZEMY_CLIPTEST"] != nil {
+            let pb = NSPasteboard(name: NSPasteboard.Name("zemy.cliptest"))
+            func feed(_ write: (NSPasteboard) -> Void, _ src: String) { pb.clearContents(); write(pb); clipboard.ingest(pb, source: src) }
+            feed({ $0.setString("Ship it beautifully. Compose screenshots, type and gradients in seconds.", forType: .string) }, "Notes")
+            feed({ $0.setString("https://example.com/zemy", forType: .string) }, "Safari")
+            if let img = ShowcaseSamples.images.first, let png = img.pngData { feed({ $0.setData(png, forType: .png) }, "Zemy") }
+            feed({ $0.writeObjects([URL(fileURLWithPath: "/System/Applications/Calculator.app") as NSURL, URL(fileURLWithPath: "/System/Applications/Notes.app") as NSURL]) }, "Finder")
+            feed({ $0.setString("secret-password", forType: .string); $0.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) }, "1Password")
+            feed({ $0.setString("Ship it beautifully. Compose screenshots, type and gradients in seconds.", forType: .string) }, "Notes")
+            print("clip items:", clipboard.items.map { "\($0.kind.rawValue): \($0.title)" })
+            print("dock menu:", clipboard.dockMenu {}.items.map(\.title))
+            let out = NSPasteboard(name: NSPasteboard.Name("zemy.cliptest.out"))
+            if let link = clipboard.items.first(where: { $0.kind == .link }) { clipboard.copy(link, to: out); print("copied back:", out.string(forType: .string) ?? "nil") }
+        }
         guard let dir = ProcessInfo.processInfo.environment["ZEMY_SNAPSHOTS"] else { return }
         print("saved layouts loaded:", showcase.saved.map(\.name))
         if let r = ProcessInfo.processInfo.environment["ZEMY_RENAME"]?.components(separatedBy: "|"), r.count == 6 {

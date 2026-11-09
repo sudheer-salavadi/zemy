@@ -4,15 +4,18 @@ import UniformTypeIdentifiers
 @main
 struct ZemyApp: App {
     @State private var state = AppState()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @AppStorage("clipboard.menubar") private var showMenuBar = true
 
     init() { NSApplication.shared.setActivationPolicy(.regular) }
 
     var body: some Scene {
-        WindowGroup("Zemy") {
+        WindowGroup("Zemy", id: "main") {
             ContentView()
                 .environment(state)
                 .frame(minWidth: 1040, minHeight: 660)
                 .onAppear {
+                    delegate.state = state
                     state.installPasteMonitor()
                     #if DEBUG
                     state.runSnapshotsIfRequested()
@@ -35,13 +38,34 @@ struct ZemyApp: App {
                 }
             }
         }
+
+        // Clipboard history in the menu bar (can be hidden from the Clipboard tool).
+        // MenuBarExtra echoes isInserted on every update; writing it unconditionally loops via UserDefaults.
+        MenuBarExtra("Zemy Clipboard", systemImage: "doc.on.clipboard", isInserted: Binding(
+            get: { showMenuBar },
+            set: { if $0 != showMenuBar { showMenuBar = $0 } }
+        )) {
+            ClipboardMenuBarView(model: state.clipboard) { state.showClipboard() }
+                .environment(state)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+/// Dock menu: recent clipboard items, one click to copy again.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var state: AppState?
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        guard let state else { return nil }
+        return state.clipboard.dockMenu { [weak state] in state?.showClipboard() }
     }
 }
 
 // MARK: - Tools
 
 enum Tool: String, CaseIterable, Identifiable {
-    case showcase, appstore, svg, icons, favicon, compress, convert, rename, background, colors
+    case showcase, appstore, svg, icons, favicon, compress, convert, rename, background, colors, clipboard
 
     var id: Self { self }
     var title: String {
@@ -51,6 +75,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .rename: "Batch Rename"
         case .background: "Remove Background"
         case .colors: "Color Picker"
+        case .clipboard: "Clipboard"
         case .svg: "SVG Studio"
         case .showcase: "Showcase"
         case .appstore: "App Store"
@@ -65,6 +90,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .rename: "Patterns, numbering & case, with undo"
         case .background: "On-device subject lift"
         case .colors: "Sample, palette, contrast"
+        case .clipboard: "Your recent copies, one click away"
         case .svg: "Paste, preview, rasterize"
         case .showcase: "Screenshots, type & gradients for web and social"
         case .appstore: "iPhone & iPad screenshot sets in every language"
@@ -79,6 +105,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .rename: "character.cursor.ibeam"
         case .background: "person.crop.rectangle.badge.plus"
         case .colors: "eyedropper.halffull"
+        case .clipboard: "doc.on.clipboard"
         case .svg: "scribble.variable"
         case .showcase: "rectangle.on.rectangle.angled"
         case .appstore: "apps.iphone"
@@ -93,6 +120,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .rename: .brown
         case .background: .purple
         case .colors: .pink
+        case .clipboard: .teal
         case .svg: .yellow
         case .showcase: .mint
         case .appstore: .indigo
@@ -107,6 +135,7 @@ enum Tool: String, CaseIterable, Identifiable {
         ("Create", [.showcase, .appstore, .svg, .icons, .favicon]),
         ("Batch", [.compress, .convert, .rename]),
         ("Inspect & Edit", [.background, .colors]),
+        ("Utilities", [.clipboard]),
     ]
 }
 
@@ -121,6 +150,20 @@ struct WorkImage: Identifiable {
 @MainActor @Observable
 final class AppState {
     var tool: Tool = .showcase
+    let clipboard = ClipboardModel()
+    /// Opens a main window (set by the window itself, so it also works after the window was closed).
+    @ObservationIgnored var openMainWindow: (() -> Void)?
+
+    /// Brings Zemy forward on the Clipboard tool (from the Dock menu or the menu bar).
+    func showClipboard() {
+        tool = .clipboard
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = NSApp.windows.first(where: { $0.canBecomeMain && $0.styleMask.contains(.titled) }) {
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
+    }
     /// The image shared by the single-image tools; flows between them.
     var current: WorkImage?
 
@@ -208,6 +251,7 @@ final class AppState {
 
 struct ContentView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         @Bindable var state = state
@@ -229,6 +273,7 @@ struct ContentView: View {
             detail.id(state.tool)
         }
         .imageDrop { state.open($0) }
+        .onAppear { state.openMainWindow = { [openWindow] in openWindow(id: "main") } }
     }
 
     @ViewBuilder private var detail: some View {
@@ -236,6 +281,7 @@ struct ContentView: View {
         case .compress, .convert: BatchToolView(model: state.batches[state.tool]!, tool: state.tool)
         case .background: BackgroundToolView(model: state.background)
         case .colors: ColorToolView(model: state.colors)
+        case .clipboard: ClipboardToolView(model: state.clipboard)
         case .svg: SVGToolView(model: state.svg)
         case .showcase: ShowcaseToolView(model: state.showcase)
         case .appstore: AppStoreToolView(model: state.store)

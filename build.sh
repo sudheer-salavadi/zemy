@@ -62,8 +62,34 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "▸ Signing (ad-hoc)…"
-codesign --force --deep --sign - "$APP"
-
 rm -rf "$ICONSET" build/icon-1024.png
-echo "✓ Built $APP ($(du -sh "$APP" | cut -f1))"
+
+# Developer ID + notarization when available (SIGN_ID / NOTARY_PROFILE override); ad-hoc otherwise.
+SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-zemy-notary}"
+ZIP="build/Zemy-${VERSION}.zip"
+
+if [ -z "$SIGN_ID" ]; then
+  echo "▸ Signing (ad-hoc — no Developer ID certificate; downloads will be blocked by Gatekeeper)…"
+  codesign --force --deep --sign - "$APP"
+  echo "✓ Built $APP ($(du -sh "$APP" | cut -f1))"
+  exit 0
+fi
+
+echo "▸ Signing ($SIGN_ID)…"
+codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+codesign --verify --strict --verbose=2 "$APP"
+
+rm -f "$ZIP"
+ditto -c -k --keepParent "$APP" "$ZIP"
+if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  echo "▸ Notarizing…"
+  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP"
+  rm -f "$ZIP" && ditto -c -k --keepParent "$APP" "$ZIP"
+  spctl --assess --type execute --verbose "$APP"
+  shasum -a 256 "$ZIP" | sed 's|build/||' > "$ZIP.sha256"
+else
+  echo "! Signed but not notarized: run xcrun notarytool store-credentials $NOTARY_PROFILE"
+fi
+echo "✓ Built $APP and $ZIP"

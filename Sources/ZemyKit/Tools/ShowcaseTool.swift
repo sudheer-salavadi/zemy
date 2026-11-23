@@ -114,7 +114,8 @@ final class ShowcaseModel {
     }
 
     /// Applies an edited text style, keeping the on-canvas scale the user chose.
-    func setText(_ s: TextStyle, at i: Int) {
+    func setText(_ s: TextStyle, id: UUID) {
+        guard let i = layers.firstIndex(where: { $0.id == id }) else { return }
         let scale = layers[i].width * width / layers[i].textSize.width
         layers[i].text = s
         layers[i].textSize = TextArt.measure(s)
@@ -573,8 +574,10 @@ struct ShowcaseToolView: View {
             Panel(title: "Canvas", symbol: "rectangle.dashed") {
                 CanvasSizePicker(width: $model.width, height: $model.height)
             }
-            if let i = model.selectedIndex, model.layers[i].isText {
-                TextStylePanels(style: Binding(get: { model.layers[i].text! }, set: { model.setText($0, at: i) }))
+            if let i = model.selectedIndex, let text = model.layers[i].text {
+                let id = model.layers[i].id
+                TextStylePanels(style: Binding(get: { model.layers.first { $0.id == id }?.text ?? text },
+                                               set: { model.setText($0, id: id) }))
             }
             if model.layers.contains(where: { !$0.isText }) { layoutsPanel }
             Panel(title: "Screenshot Style", symbol: "macwindow") {
@@ -631,6 +634,12 @@ struct ShowcaseToolView: View {
 
     // MARK: Panels
 
+    /// Keyed by id so controls that outlive their layer (deleted, sample cleared) can't index past the end.
+    private func layerBinding(_ layer: ShowcaseModel.Layer) -> Binding<ShowcaseModel.Layer> {
+        Binding(get: { model.layers.first { $0.id == layer.id } ?? layer },
+                set: { v in if let j = model.layers.firstIndex(where: { $0.id == layer.id }) { model.layers[j] = v } })
+    }
+
     private var layersPanel: some View {
         Panel(title: "Screenshots & Text", symbol: "photo.stack") {
             HStack {
@@ -649,11 +658,12 @@ struct ShowcaseToolView: View {
                     Button { model.duplicate() } label: { Image(systemName: "plus.square.on.square") }.help("Duplicate")
                     Button(role: .destructive) { model.delete() } label: { Image(systemName: "trash") }.help("Delete (⌫)")
                 }
-                SliderRow(label: "Size", value: $model.layers[i].width, range: 0.03...1.2) { "\(Int($0 * 100))%" }
-                SliderRow(label: "Rotation", value: $model.layers[i].rotation, range: -30...30) { "\(Int($0))°" }
+                let l = layerBinding(model.layers[i])
+                SliderRow(label: "Size", value: l.width, range: 0.03...1.2) { "\(Int($0 * 100))%" }
+                SliderRow(label: "Rotation", value: l.rotation, range: -30...30) { "\(Int($0))°" }
                 if !model.layers[i].isText {
                     let px = model.layers[i].width * model.width
-                    SliderRow(label: "Corner radius", value: $model.layers[i].corner, range: 0...0.15) { "\(Int($0 * px)) px" }
+                    SliderRow(label: "Corner radius", value: l.corner, range: 0...0.15) { "\(Int($0 * px)) px" }
                     Button("Apply this radius to all") {
                         let r = model.layers[i].corner
                         for j in model.layers.indices { model.layers[j].corner = r }

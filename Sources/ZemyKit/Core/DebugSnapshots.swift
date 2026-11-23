@@ -50,6 +50,49 @@ extension AppState {
             let out = NSPasteboard(name: NSPasteboard.Name("zemy.cliptest.out"))
             if let link = clipboard.items.first(where: { $0.kind == .link }) { clipboard.copy(link, to: out); print("copied back:", out.string(forType: .string) ?? "nil") }
         }
+        if let imgs = ProcessInfo.processInfo.environment["ZEMY_QUEUE"] {
+            tool = .compress
+            let m = batches[.compress]!
+            m.add(imgs.split(separator: ",").map { URL(fileURLWithPath: String($0)) })
+            Task {
+                var last: Set<UUID> = [], order: [String] = []
+                while true {
+                    if m.items.map(\.name) != order {
+                        order = m.items.map(\.name)
+                        print("queue:", order); fflush(stdout)
+                    }
+                    if m.selection != last {
+                        last = m.selection
+                        print("selection:", m.items.filter { last.contains($0.id) }.map(\.name)); fflush(stdout)
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
+            return
+        }
+        if let imgs = ProcessInfo.processInfo.environment["ZEMY_SELTEST"] {
+            tool = .compress
+            let m = batches[.compress]!
+            m.add(imgs.split(separator: ",").map { URL(fileURLWithPath: String($0)) })
+            Task {
+                while m.items.isEmpty || (m.busy && ProcessInfo.processInfo.environment["ZEMY_BUSY"] == nil) { try? await Task.sleep(for: .milliseconds(200)) }
+                try? await Task.sleep(for: .seconds(1))
+                let win = NSApp.windows.first { $0.isVisible }
+                for round in 0..<2 {
+                    for item in m.items {
+                        let t = Date()
+                        m.selection = [item.id]
+                        await Task.yield()
+                        win?.contentView?.layoutSubtreeIfNeeded()
+                        win?.displayIfNeeded()
+                        CATransaction.flush()
+                        print("select round \(round) \(item.name) busy=\(m.busy): \(Int(Date().timeIntervalSince(t) * 1000)) ms")
+                    }
+                }
+                NSApp.terminate(nil)
+            }
+            return
+        }
         guard let dir = ProcessInfo.processInfo.environment["ZEMY_SNAPSHOTS"] else { return }
         print("saved layouts loaded:", showcase.saved.map(\.name))
         if let r = ProcessInfo.processInfo.environment["ZEMY_RENAME"]?.components(separatedBy: "|"), r.count == 6 {
@@ -66,6 +109,12 @@ extension AppState {
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             if ProcessInfo.processInfo.environment["ZEMY_TEXT"] != nil { showcase.addText() }
+            if let which = ProcessInfo.processInfo.environment["ZEMY_CLEARSAMPLE"] {
+                showcase.selected = which == "text" ? showcase.layers.last { $0.isText }?.id : showcase.layers.first?.id
+                if which == "selectonly" { showcase.selected = showcase.layers.last { $0.isText }?.id; return }
+                try? await Task.sleep(for: .seconds(1))
+                showcase.clearSample()
+            }
             if ProcessInfo.processInfo.environment["ZEMY_DORENAME"] != nil { rename.apply(); print("rename result:", rename.message ?? "nil") }
             if let st = ProcessInfo.processInfo.environment["ZEMY_STYLE"].flatMap(StoreStyle.init(rawValue:)) { store.style = st }
             if let dev = ProcessInfo.processInfo.environment["ZEMY_DEVICE"].flatMap(StoreDevice.init(rawValue:)) { store.device = dev }

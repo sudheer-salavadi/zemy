@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 // MARK: - Model
 
 /// Clipboard history: watches the system pasteboard and keeps the most recent copies
-/// (text, links, images, files). Stays on this Mac; password-manager copies are skipped.
+/// (text, links, images). Stays on this Mac; password-manager copies are skipped.
 @MainActor @Observable
 final class ClipboardModel {
     enum Kind: String, Codable { case text, link, image, files }
@@ -55,6 +55,8 @@ final class ClipboardModel {
         }
     }
     var lastCopied: UUID?
+    var selected: UUID?
+    var selectedItem: Item? { items.first { $0.id == selected } }
 
     @ObservationIgnored private var lastChange = NSPasteboard.general.changeCount
     @ObservationIgnored private var timer: Timer?
@@ -79,7 +81,7 @@ final class ClipboardModel {
         try? FileManager.default.createDirectory(at: Self.store, withIntermediateDirectories: true)
         if keepAfterQuit, let data = try? Data(contentsOf: Self.index),
            let saved = try? JSONDecoder().decode([Item].self, from: data) {
-            items = saved
+            items = saved.filter { $0.kind != .files }
         }
         dockTarget.model = self
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -97,24 +99,33 @@ final class ClipboardModel {
         ingest(pb, source: NSWorkspace.shared.frontmostApplication?.localizedName)
     }
 
-    /// Reads one pasteboard state into the history (files, then images, then text).
+    /// Reads one pasteboard state into the history (image files, images, then text). Other file copies are skipped.
     func ingest(_ pb: NSPasteboard, source: String? = nil) {
         let types = Set((pb.types ?? []).map(\.rawValue))
         guard types.isDisjoint(with: Self.privateTypes) else { return }
+        // File copies keep only image files (read from disk; Finder's pasteboard image is just the icon).
+        // Other files are skipped, along with the file-name string Finder adds.
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            let paths = urls.map(\.path)
-            record(Item(kind: .files, paths: paths, hash: Self.digest(Data(paths.joined(separator: "\n").utf8)), source: source))
-        } else if let data = pb.data(forType: .png) ?? pb.data(forType: .tiff),
-                  let rep = NSBitmapImageRep(data: data), let png = rep.representation(using: .png, properties: [:]) {
-            let hash = Self.digest(png)
-            if let i = items.firstIndex(where: { $0.hash == hash }) { bump(i); return }
-            let name = UUID().uuidString + ".png"
-            try? png.write(to: Self.store.appendingPathComponent(name))
-            record(Item(kind: .image, imageFile: name, size: CGSize(width: rep.pixelsWide, height: rep.pixelsHigh), hash: hash, source: source))
+            for url in urls where UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+                if let data = try? Data(contentsOf: url) { recordImage(data, source: source) }
+            }
+            return
+        }
+        if let data = pb.data(forType: .png) ?? pb.data(forType: .tiff) {
+            recordImage(data, source: source)
         } else if let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let isLink = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)).map { ["http", "https", "mailto"].contains($0.scheme ?? "") } ?? false
             record(Item(kind: isLink ? .link : .text, text: s, hash: Self.digest(Data(s.utf8)), source: source))
         }
+    }
+
+    private func recordImage(_ data: Data, source: String?) {
+        guard let rep = NSBitmapImageRep(data: data), let png = rep.representation(using: .png, properties: [:]) else { return }
+        let hash = Self.digest(png)
+        if let i = items.firstIndex(where: { $0.hash == hash }) { bump(i); return }
+        let name = UUID().uuidString + ".png"
+        try? png.write(to: Self.store.appendingPathComponent(name))
+        record(Item(kind: .image, imageFile: name, size: CGSize(width: rep.pixelsWide, height: rep.pixelsHigh), hash: hash, source: source))
     }
 
     private func record(_ item: Item) {
@@ -162,7 +173,7 @@ final class ClipboardModel {
         item.imageFile.flatMap { NSImage(contentsOf: Self.store.appendingPathComponent($0)) }
     }
 
-    /// Puts an item back on the clipboard (without recording it as a new copy).
+    /// Puts an item back on the clipboard (without re-adding it or moving it).
     func copy(_ item: Item, to pb: NSPasteboard = .general) {
         pb.clearContents()
         switch item.kind {
@@ -179,8 +190,8 @@ final class ClipboardModel {
             pb.writeObjects((item.paths ?? []).map { URL(fileURLWithPath: $0) as NSURL })
         }
         if pb == .general { lastChange = pb.changeCount }
-        if let i = items.firstIndex(where: { $0.id == item.id }) { bump(i) }
         lastCopied = item.id
+        selected = item.id
     }
 
     func togglePin(_ item: Item) {
@@ -233,7 +244,7 @@ final class ClipboardModel {
             menu.addItem(mi)
         }
         menu.addItem(.separator())
-        let pause = NSMenuItem(title: paused ? "Resume Recording" : "Pause Recording", action: #selector(DockMenuTarget.togglePause(_:)), keyEquivalent: "")
+        let pause = NSMenuItem(title: paused ? "Turn On Clipboard History" : "Turn Off Clipboard History", action: #selector(DockMenuTarget.togglePause(_:)), keyEquivalent: "")
         pause.target = dockTarget
         menu.addItem(pause)
         dockTarget.open = open
@@ -259,74 +270,140 @@ final class DockMenuTarget: NSObject {
 
 // MARK: - Shared row
 
-/// One history entry with preview and actions; used in the app and the menu bar panel.
+/// One history entry; click copies, actions show on hover. Used in the app and the menu bar panel.
 struct ClipboardRow: View {
     let item: ClipboardModel.Item
     let model: ClipboardModel
     var compact = false
+    var shortcut: Int? = nil
+    var onSelection = false
     @Environment(AppState.self) private var state
+    @State private var hover = false
 
     var body: some View {
         let justCopied = model.lastCopied == item.id
         HStack(alignment: .top, spacing: 12) {
             preview
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title).font(compact ? .callout : .body).lineLimit(compact ? 2 : 3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 6) {
-                    Label(item.kind.rawValue.capitalized, systemImage: item.symbol)
-                    Text(item.date, style: .relative) + Text(" ago")
-                    if let s = item.source, !compact { Text("· \(s)") }
+            VStack(alignment: .leading, spacing: 3) {
+                content
+                HStack(spacing: 5) {
+                    if item.pinned { Image(systemName: "pin.fill").foregroundStyle(Tool.clipboard.tint) }
+                    Text(meta)
                 }
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer(minLength: 0)
-            HStack(spacing: 4) {
-                Button { model.togglePin(item) } label: { Image(systemName: item.pinned ? "pin.fill" : "pin") }
-                    .help(item.pinned ? "Unpin" : "Pin (kept beyond the limit)")
-                if !compact {
-                    if item.kind == .image, let img = model.image(item)?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            .frame(maxWidth: .infinity, alignment: .leading)
+            trailing(justCopied)
+        }
+        .padding(.horizontal, compact ? 8 : 4).padding(.vertical, compact ? 7 : 6)
+        .background(compact && hover ? AnyShapeStyle(.primary.opacity(0.09)) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { hover = $0 }
+        .gesture(TapGesture().onEnded { model.copy(item) }, isEnabled: compact)
+        .contextMenu { menuItems }
+        .help("Click to copy")
+    }
+
+    private var meta: String {
+        var parts = [item.kind.rawValue.capitalized]
+        if let s = item.source { parts.append(s) }
+        parts.append(item.date.formatted(.relative(presentation: .named)))
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var content: some View {
+        switch item.kind {
+        case .link:
+            let url = URL(string: item.text ?? "")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(url?.host() ?? item.title).font((compact ? Font.callout : .body).weight(.semibold)).lineLimit(1)
+                let rest = url.map { $0.path() + ($0.query().map { "?" + $0 } ?? "") } ?? ""
+                if rest.count > 1 {
+                    Text(rest).font(.system(compact ? .caption : .callout, design: .monospaced))
+                        .foregroundStyle(onSelection ? AnyShapeStyle(.secondary) : AnyShapeStyle(Tool.clipboard.tint)).lineLimit(1).truncationMode(.middle)
+                }
+            }
+        case .text:
+            Text((item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+                .font(compact ? .callout : .body).lineLimit(compact ? 2 : 4)
+        default:
+            Text(item.title).font((compact ? Font.callout : .body).weight(.medium)).lineLimit(2)
+        }
+    }
+
+    @ViewBuilder private func trailing(_ justCopied: Bool) -> some View {
+        ZStack(alignment: .trailing) {
+            if justCopied {
+                Label("Copied", systemImage: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(onSelection ? Color.white : .green)
+            } else if hover {
+                HStack(spacing: 2) {
+                    iconButton(item.pinned ? "pin.slash" : "pin", item.pinned ? "Unpin" : "Pin (kept beyond the limit)") { model.togglePin(item) }
+                    if !compact, let img = cgImage {
                         Menu {
-                            ForEach(Tool.allCases.filter(\.takesImage)) { t in
+                            ForEach(Tool.visible.filter(\.takesImage)) { t in
                                 Button(t.title) { state.send(img, name: "Clipboard image", to: t) }
                             }
                         } label: { Image(systemName: "arrowshape.turn.up.right") }
-                            .menuIndicator(.hidden).fixedSize().help("Send to a Zemy tool")
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Send to a Zemy tool")
                     }
-                    if item.kind == .text, let t = item.text, t.range(of: "<svg", options: .caseInsensitive) != nil {
-                        Button { state.svg.source = t; state.tool = .svg } label: { Image(systemName: "scribble.variable") }
-                            .help("Open in SVG Studio")
-                    }
-                    Button(role: .destructive) { model.delete(item) } label: { Image(systemName: "trash") }.help("Delete")
+                    iconButton("trash", "Delete") { model.delete(item) }
                 }
-                Button { model.copy(item) } label: {
-                    Label(justCopied ? "Copied" : "Copy", systemImage: justCopied ? "checkmark" : "doc.on.doc")
-                }
-                .buttonStyle(.borderedProminent).tint(justCopied ? .green : Tool.clipboard.tint)
+            } else if let shortcut {
+                Text("⌥\(shortcut)").font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
             }
-            .buttonStyle(.borderless)
-            .controlSize(compact ? .small : .regular)
         }
-        .padding(compact ? 8 : 12)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.copy(item) }
+        .frame(minWidth: 64, alignment: .trailing)
+        .frame(maxHeight: .infinity, alignment: .center)
+    }
+
+    private func iconButton(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).frame(width: 24, height: 22) }
+            .buttonStyle(.borderless).foregroundStyle(.secondary).help(help)
+    }
+
+    private var cgImage: CGImage? {
+        item.kind == .image ? model.image(item)?.cgImage(forProposedRect: nil, context: nil, hints: nil) : nil
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        Button("Copy") { model.copy(item) }
+        Button(item.pinned ? "Unpin" : "Pin") { model.togglePin(item) }
+        if let img = cgImage {
+            Menu("Send to") {
+                ForEach(Tool.allCases.filter(\.takesImage)) { t in
+                    Button(t.title) { state.send(img, name: "Clipboard image", to: t) }
+                }
+            }
+        }
+        if item.kind == .text, let t = item.text, t.range(of: "<svg", options: .caseInsensitive) != nil {
+            Button("Open in SVG Studio") { state.svg.source = t; state.tool = .svg }
+        }
+        Divider()
+        Button("Delete", role: .destructive) { model.delete(item) }
     }
 
     @ViewBuilder private var preview: some View {
-        let side: CGFloat = compact ? 34 : 54
-        Group {
-            if item.kind == .image, let img = model.image(item) {
-                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
-            } else if item.kind == .files, let p = item.paths?.first {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: p)).resizable().padding(4)
-            } else {
-                Image(systemName: item.symbol).font(.system(size: side * 0.4)).foregroundStyle(.secondary)
-            }
+        Group { previewContent }.frame(width: compact ? 32 : 48, alignment: .leading)
+    }
+
+    @ViewBuilder private var previewContent: some View {
+        if item.kind == .image, let img = model.image(item) {
+            let w: CGFloat = compact ? 32 : 48
+            let h = min(max(w * img.size.height / max(img.size.width, 1), w * 0.6), w * 1.6)
+            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: w, height: h)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+        } else if item.kind == .files, let p = item.paths?.first {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: p)).resizable().frame(width: compact ? 26 : 32, height: compact ? 26 : 32)
+        } else {
+            Image(systemName: item.symbol)
+                .font(.system(size: compact ? 12 : 14, weight: .medium))
+                .foregroundStyle(Tool.clipboard.tint)
+                .frame(width: compact ? 26 : 32, height: compact ? 26 : 32)
+                .background(Tool.clipboard.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         }
-        .frame(width: side, height: side)
-        .background(.background.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 }
 
@@ -338,30 +415,35 @@ struct ClipboardToolView: View {
 
     var body: some View {
         ToolScaffold(tool: .clipboard) {
+          VStack(spacing: 0) {
+            header
+            Divider()
             if model.items.isEmpty {
                 ContentUnavailableView {
                     Label("Nothing copied yet", systemImage: "doc.on.clipboard")
                 } description: {
-                    Text("Copy anything (text, links, images or files) in any app and it appears here. Your last \(model.limit) copies are always one click away, from here, the Dock or the menu bar.")
+                    Text("Copy text, links or images in any app and it appears here. Your last \(model.limit) copies are always one click away, from here, the Dock or the menu bar.")
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(model.ordered) { ClipboardRow(item: $0, model: model) }
-                    }
-                    .padding(20)
+                let pinned = model.items.filter(\.pinned), recent = model.items.filter { !$0.pinned }
+                List(selection: $model.selected) {
+                    if !pinned.isEmpty { section("Pinned", pinned, offset: 0) }
+                    section("Recent", recent, offset: pinned.count)
                 }
+                .onDeleteCommand { if let item = model.selectedItem { model.delete(item) } }
+                .onChange(of: model.selected) { _, id in
+                    if let item = model.items.first(where: { $0.id == id }) { model.copy(item) }
+                }
+                .background(shortcuts)
             }
+          }
         } inspector: {
-            Panel(title: "Recording", symbol: "record.circle") {
-                Toggle("Record clipboard", isOn: Binding(get: { !model.paused }, set: { model.paused = !$0 }))
-                Stepper("Keep last \(model.limit) items", value: $model.limit, in: 5...50, step: 5)
-                Toggle("Keep history after quitting", isOn: $model.keepAfterQuit)
-                Text("Pinned items are kept beyond the limit.").font(.caption).foregroundStyle(.secondary)
+            if let item = model.selectedItem {
+                ClipboardDetail(item: item, model: model)
             }
-            Panel(title: "Quick Access", symbol: "dock.rectangle") {
-                Toggle("Show in menu bar", isOn: $menuBar)
-                Text("Right-click Zemy in the Dock, or click the menu bar icon, to copy any recent item.")
+            Panel(title: "Shortcuts", symbol: "keyboard") {
+                Text("Click a row to copy it, or press ⌥1–⌥9. Right-click Zemy in the Dock, or click the menu bar icon, to copy from anywhere.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Panel(title: "Manage", symbol: "trash") {
@@ -372,10 +454,127 @@ struct ClipboardToolView: View {
                 .disabled(model.items.isEmpty)
             }
             Panel(title: "Privacy", symbol: "lock.shield") {
-                Text("History stays on this Mac (\(model.keepAfterQuit ? "saved in Application Support" : "memory only")). Copies that password managers mark as private are never recorded. Zemy records only while it's running.")
+                Text("History stays on this Mac (\(model.keepAfterQuit ? "saved in Application Support" : "memory only")). Copies that password managers mark as private are never saved. History is kept only while Zemy is running.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Toggle(isOn: $menuBar) { Label("Show in Menu Bar", systemImage: "menubar.rectangle") }
+                    .help(menuBar ? "Hide clipboard from the menu bar" : "Show clipboard in the menu bar")
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 18) {
+            Toggle(model.paused ? "Clipboard history off" : "Clipboard history on", isOn: Binding(get: { !model.paused }, set: { model.paused = !$0 }))
+                .toggleStyle(.switch).controlSize(.small)
+                .help("When off, nothing you copy is added to the history.")
+            Stepper("Keep last \(model.limit)", value: $model.limit, in: 5...50, step: 5)
+                .help("Pinned items are kept beyond the limit.")
+            Toggle("Keep after quitting", isOn: $model.keepAfterQuit).toggleStyle(.checkbox)
+            Spacer()
+        }
+        .font(.callout)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func section(_ title: String, _ items: [ClipboardModel.Item], offset: Int) -> some View {
+        Section {
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                ClipboardRow(item: item, model: model, shortcut: offset + i < 9 ? offset + i + 1 : nil, onSelection: model.selected == item.id).tag(item.id)
+            }
+        } header: {
+            HStack {
+                Text(title)
+                Text("\(items.count)").monospacedDigit().foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Invisible buttons for ⌥1–⌥9 (⌘1–9 switch tools).
+    private var shortcuts: some View {
+        ZStack {
+            ForEach(Array(model.ordered.prefix(9).enumerated()), id: \.element.id) { i, item in
+                Button("") { model.copy(item) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .option)
+            }
+        }
+        .opacity(0).allowsHitTesting(false)
+    }
+}
+
+// MARK: - Detail
+
+/// Full content of the selected item, shown at the top of the inspector.
+struct ClipboardDetail: View {
+    let item: ClipboardModel.Item
+    let model: ClipboardModel
+
+    var body: some View {
+        Panel(title: "Selected", symbol: item.symbol) {
+            switch item.kind {
+            case .text, .link:
+                let t = item.text ?? ""
+                FullText(text: t)
+                    .frame(height: 380)
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+                let lines = t.trimmingCharacters(in: .newlines).split(separator: "\n", omittingEmptySubsequences: false).count
+                Text("\(t.count.formatted()) characters · \(lines.formatted()) \(lines == 1 ? "line" : "lines")")
+                    .font(.caption).foregroundStyle(.secondary)
+                if item.kind == .link, let u = URL(string: t.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    Button("Open Link") { NSWorkspace.shared.open(u) }
+                }
+            case .image:
+                if let img = model.image(item) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 380)
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+                }
+                Text(item.title).font(.caption).foregroundStyle(.secondary)
+            case .files:
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(item.paths ?? [], id: \.self) { p in
+                        HStack(spacing: 6) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: p)).resizable().frame(width: 18, height: 18)
+                            Text(p).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                .lineLimit(3).truncationMode(.middle)
+                        }
+                    }
+                }
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting((item.paths ?? []).map { URL(fileURLWithPath: $0) })
+                }
+            }
+            HStack {
+                Button("Copy") { model.copy(item) }
+                Button(item.pinned ? "Unpin" : "Pin") { model.togglePin(item) }
+            }
+        }
+    }
+}
+
+/// Read-only, selectable text view; NSTextView handles very long text better than Text.
+private struct FullText: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let tv = scroll.documentView as! NSTextView
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.textContainerInset = NSSize(width: 6, height: 6)
+        tv.drawsBackground = true
+        tv.backgroundColor = .textBackgroundColor
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? NSTextView, tv.string != text else { return }
+        tv.string = text
+        DispatchQueue.main.async { scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView) }
     }
 }
 
@@ -384,25 +583,28 @@ struct ClipboardToolView: View {
 struct ClipboardMenuBarView: View {
     let model: ClipboardModel
     let openApp: () -> Void
+    @State private var listHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Clipboard").font(.headline)
                 Spacer()
-                Toggle("Record", isOn: Binding(get: { !model.paused }, set: { model.paused = !$0 }))
-                    .toggleStyle(.switch).controlSize(.mini).labelsHidden().help(model.paused ? "Recording paused" : "Recording")
+                Toggle("Clipboard history", isOn: Binding(get: { !model.paused }, set: { model.paused = !$0 }))
+                    .toggleStyle(.switch).controlSize(.mini).labelsHidden().help(model.paused ? "Clipboard history off" : "Clipboard history on")
             }
             if model.items.isEmpty {
                 Text("Copy something and it shows up here.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 20)
                     .frame(maxWidth: .infinity)
             } else {
+                // The window sizes to fit, and a bare ScrollView has no height of its own.
                 ScrollView {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 0) {
                         ForEach(model.ordered) { ClipboardRow(item: $0, model: model, compact: true) }
                     }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
                 }
-                .frame(maxHeight: 420)
+                .frame(height: min(max(listHeight, 1), 420))
             }
             Divider()
             HStack {
@@ -414,5 +616,30 @@ struct ClipboardMenuBarView: View {
         }
         .padding(12)
         .frame(width: 360)
+        .background(PanelCorners(radius: 16))
+    }
+}
+
+/// MenuBarExtra's window ships with near-square corners; round its frame like system menus.
+private struct PanelCorners: NSViewRepresentable {
+    let radius: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { apply(v.window) }
+        return v
+    }
+
+    func updateNSView(_ v: NSView, context: Context) { apply(v.window) }
+
+    private func apply(_ window: NSWindow?) {
+        guard let window, let frame = window.contentView?.superview else { return }
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        frame.wantsLayer = true
+        frame.layer?.cornerRadius = radius
+        frame.layer?.cornerCurve = .continuous
+        frame.layer?.masksToBounds = true
+        window.invalidateShadow()
     }
 }

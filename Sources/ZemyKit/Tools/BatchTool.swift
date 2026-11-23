@@ -37,6 +37,7 @@ struct PipelineResult {
     let data: Data
     let format: ImageFormat
     let image: CGImage
+    let preview: CGImage
     let unchanged: Bool
 }
 
@@ -59,7 +60,7 @@ enum Pipeline {
         var unchanged = false
         if target == nil, format == src.format, out.count >= original.count { out = original; unchanged = true }
         let preview = unchanged ? src.image : (ImageIOKit.load(out)?.image ?? image)
-        return PipelineResult(data: out, format: format, image: preview, unchanged: unchanged)
+        return PipelineResult(data: out, format: format, image: preview, preview: preview.fitted(maxSide: BatchItem.previewSide), unchanged: unchanged)
     }
 }
 
@@ -68,14 +69,20 @@ struct BatchItem: Identifiable {
     let url: URL
     let data: Data
     let source: LoadedImage
+    let thumb: CGImage
+    let preview: CGImage
+    static let previewSide: CGFloat = 2400
     var result: PipelineResult?
     var busy = true
     var failed = false
+    var saved = false // current result has been written out
     var name: String { url.deletingPathExtension().lastPathComponent }
 
     init?(url: URL) {
         guard let d = try? Data(contentsOf: url), let s = ImageIOKit.load(d) else { return nil }
         self.url = url; data = d; source = s
+        preview = s.image.fitted(maxSide: Self.previewSide)
+        thumb = preview.fitted(maxSide: 96)
     }
 
     var saving: Double? {
@@ -88,7 +95,7 @@ struct BatchItem: Identifiable {
 final class BatchModel {
     let mode: Tool
     var items: [BatchItem] = []
-    var selection: UUID?
+    var selection: Set<UUID> = []
     var settings = PipelineSettings() { didSet { if settings != oldValue { process() } } }
     @ObservationIgnored private var generation = 0
 
@@ -104,10 +111,11 @@ final class BatchModel {
         }
     }
 
-    var selected: BatchItem? { items.first { $0.id == selection } ?? items.first }
+    var selected: BatchItem? { items.first { selection.contains($0.id) } ?? items.first }
     var busy: Bool { items.contains(where: \.busy) }
     var totalIn: Int { items.reduce(0) { $0 + $1.data.count } }
     var totalOut: Int { items.reduce(0) { $0 + ($1.result?.data.count ?? $1.data.count) } }
+    var unsaved: [BatchItem] { items.filter { !$0.saved } }
 
     func add(_ urls: [URL]) {
         Task {
@@ -116,14 +124,17 @@ final class BatchModel {
                 return await g.reduce(into: []) { $0.append($1) }.sorted { $0.0 < $1.0 }.compactMap(\.1)
             }
             items += loaded
-            if selection == nil { selection = loaded.first?.id }
+            if selection.isEmpty, let first = loaded.first { selection = [first.id] }
             process(loaded.map(\.id))
         }
     }
 
-    func remove(_ id: UUID) {
-        items.removeAll { $0.id == id }
-        if selection == id { selection = items.first?.id }
+    func remove(_ ids: Set<UUID>) {
+        guard let i = items.firstIndex(where: { ids.contains($0.id) }) else { return }
+        items.removeAll { ids.contains($0.id) }
+        selection.subtract(ids)
+        // Land on whatever slid into the first removed slot.
+        if selection.isEmpty, let next = items.indices.contains(i) ? items[i] : items.last { selection = [next.id] }
     }
 
     /// Re-encodes the given items (or all) on every core; stale results are dropped.
@@ -149,6 +160,7 @@ final class BatchModel {
                         items[i].result = result
                         items[i].failed = result == nil
                         items[i].busy = false
+                        items[i].saved = false
                     }
                     enqueue()
                 }
@@ -168,8 +180,10 @@ final class BatchModel {
     func saveAll(_ only: [BatchItem]? = nil) {
         guard let folder = Inbox.chooseFolder() else { return }
         for item in only ?? items {
-            guard let r = item.result else { continue }
-            try? r.data.write(to: Inbox.unique(folder, outputName(item), r.format.ext))
+            guard let r = item.result,
+                  (try? r.data.write(to: Inbox.unique(folder, outputName(item), r.format.ext))) != nil,
+                  let i = items.firstIndex(where: { $0.id == item.id }) else { continue }
+            items[i].saved = true
         }
         NSWorkspace.shared.activateFileViewerSelecting([folder])
     }
@@ -177,7 +191,7 @@ final class BatchModel {
     /// Temp file used for drag-out.
     func tempFile(_ item: BatchItem) -> URL? {
         guard let r = item.result else { return nil }
-        return Inbox.temp(r.data, name: outputName(item), ext: r.format.ext)
+        return Inbox.dragOut(r.data, name: outputName(item), ext: r.format.ext)
     }
 }
 
@@ -193,15 +207,15 @@ struct BatchToolView: View {
             if model.items.isEmpty {
                 DropZone(tool: tool) { state.open($0) }
             } else {
-                VStack(spacing: 0) {
+                VSplitView {
                     Group {
                         if let item = model.selected {
-                            CompareView(before: item.source.image, after: item.result?.image).id(item.id)
+                            CompareView(before: item.source.image, after: item.result?.image,
+                                        previews: (item.preview, item.result?.preview)).id(item.id)
                         }
                     }
-                    .frame(maxHeight: .infinity)
-                    Divider()
-                    fileList.frame(height: 200)
+                    .frame(minHeight: 120, maxHeight: .infinity)
+                    fileList.frame(minHeight: 90, idealHeight: 200, maxHeight: .infinity)
                 }
             }
         } inspector: {
@@ -211,7 +225,9 @@ struct BatchToolView: View {
         .toolbar {
             if !model.items.isEmpty {
                 Button { state.open(Inbox.openPanel()) } label: { Label("Add Images", systemImage: "plus") }
-                Button { model.items.removeAll(); model.selection = nil } label: { Label("Clear", systemImage: "trash") }
+                Button { model.remove(model.selection) } label: { Label("Remove", systemImage: "trash") }
+                    .help(model.selection.count > 1 ? "Remove \(model.selection.count) images (⌫)" : "Remove image (⌫) — ⌘A selects all")
+                    .disabled(model.selection.isEmpty)
             }
         }
     }
@@ -331,14 +347,31 @@ struct BatchToolView: View {
                 }
                 Text("\(model.items.count) image\(model.items.count == 1 ? "" : "s") · \(model.totalIn.bytes) → \(model.totalOut.bytes)")
                     .font(.callout).foregroundStyle(.secondary)
-                Button { model.saveAll() } label: {
-                    Label("Save All to Folder…", systemImage: "square.and.arrow.down.on.square").frame(maxWidth: .infinity)
+                let total = model.items.count, fresh = model.unsaved
+                let partial = !fresh.isEmpty && fresh.count < total
+                Button { model.saveAll(partial ? fresh : nil) } label: {
+                    Label(partial ? "Save \(fresh.count) New \(plural(fresh.count))…" : "Save \(total) \(plural(total)) to Folder…",
+                          systemImage: "square.and.arrow.down.on.square").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large).tint(tool.tint).disabled(model.busy)
+                let picked = model.items.filter { model.selection.contains($0.id) }
+                if total > 1, !picked.isEmpty, picked.count < total {
+                    Button { model.saveAll(picked) } label: {
+                        Label("Save \(picked.count) Selected \(plural(picked.count))…", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large).disabled(model.busy)
+                }
+                if partial {
+                    Button("Save all \(total) instead…") { model.saveAll() }
+                        .buttonStyle(.link).font(.caption).disabled(model.busy)
+                }
                 Text("Tip: drag any row out to Finder, Figma or Slack.").font(.caption).foregroundStyle(.tertiary)
             }
         }
     }
+
+    private func plural(_ n: Int) -> String { n == 1 ? "Image" : "Images" }
 
     // MARK: File list
 
@@ -346,30 +379,35 @@ struct BatchToolView: View {
         List(selection: $model.selection) {
             ForEach(model.items) { item in
                 row(item).tag(item.id)
-                    .onDrag {
-                        model.tempFile(item).flatMap { NSItemProvider(contentsOf: $0) } ?? NSItemProvider()
-                    }
-                    .contextMenu {
-                        Button("Save…") { model.saveAll([item]) }
-                        Button("Show Original in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-                        if let r = item.result {
-                            Menu("Send to") {
-                                ForEach(Tool.allCases.filter { $0.takesImage && $0 != tool }) { t in
-                                    Button(t.title) { state.send(r.image, name: item.name, to: t) }
-                                }
-                            }
+                    .itemProvider { model.tempFile(item).flatMap { NSItemProvider(contentsOf: $0) } }
+            }
+            .onMove { model.items.move(fromOffsets: $0, toOffset: $1) }
+        }
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            let picked = model.items.filter { ids.contains($0.id) }
+            if !picked.isEmpty {
+                Button(picked.count == 1 ? "Save…" : "Save \(picked.count) Images…") { model.saveAll(picked) }
+                Button("Show Original\(picked.count == 1 ? "" : "s") in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(picked.map(\.url))
+                }
+                if picked.count == 1, let item = picked.first, let r = item.result {
+                    Menu("Send to") {
+                        ForEach(Tool.allCases.filter { $0.takesImage && $0 != tool }) { t in
+                            Button(t.title) { state.send(r.image, name: item.name, to: t) }
                         }
-                        Divider()
-                        Button("Remove", role: .destructive) { model.remove(item.id) }
                     }
+                }
+                Divider()
+                Button(picked.count == 1 ? "Remove" : "Remove \(picked.count) Images", role: .destructive) { model.remove(ids) }
             }
         }
+        .onDeleteCommand { model.remove(model.selection) }
         .imageDrop { state.open($0) }
     }
 
     private func row(_ item: BatchItem) -> some View {
         HStack(spacing: 10) {
-            PixelImage(image: item.source.image).aspectRatio(contentMode: .fill)
+            PixelImage(image: item.thumb).aspectRatio(contentMode: .fill)
                 .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -386,6 +424,7 @@ struct BatchToolView: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            if item.saved { Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary).help("Saved") }
             if item.busy { ProgressView().controlSize(.small) }
             else if item.failed { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("Couldn't encode this one") }
             VStack(alignment: .trailing, spacing: 2) {

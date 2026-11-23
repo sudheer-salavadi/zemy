@@ -54,7 +54,10 @@ final class StoreModel {
         var phone: CGImage?
         var pad: CGImage?
         var captions: [String: Caption] = [:]
-        var isSample = false
+        var phoneIsSample = false
+        var padIsSample = false
+        /// nil follows the set's default style.
+        var style: StoreStyle?
     }
     struct Issue: Identifiable { let id = UUID(); let error: Bool; let text: String }
 
@@ -89,7 +92,19 @@ final class StoreModel {
 
     var primary: String { locales[0] }
     var selectedIndex: Int? { pages.firstIndex { $0.id == selected } }
-    var showsSample: Bool { pages.contains(where: \.isSample) }
+    var showsSample: Bool { pages.contains { $0.phoneIsSample || $0.padIsSample } }
+
+    func style(_ i: Int) -> StoreStyle { pages.indices.contains(i) ? pages[i].style ?? style : style }
+    var selectedStyle: StoreStyle { selectedIndex.map(style) ?? style }
+
+    func setStyle(_ s: StoreStyle) {
+        if let i = selectedIndex { pages[i].style = s } else { style = s }
+    }
+
+    func applyStyleToAll(_ s: StoreStyle) {
+        style = s
+        for i in pages.indices { pages[i].style = nil }
+    }
 
     init() { loadSample() }
 
@@ -98,27 +113,42 @@ final class StoreModel {
         guard shots.count >= 2 else { return }
         pages = [
             Page(phone: shots[0], pad: ShowcaseSamples.padDashboard,
-                 captions: ["en-US": Caption(headline: "Music that moves with you", sub: "Beautiful playback on every device")], isSample: true),
+                 captions: ["en-US": Caption(headline: "Music that moves with you", sub: "Beautiful playback on every device")],
+                 phoneIsSample: true, padIsSample: true),
             Page(phone: shots[1], pad: ShowcaseSamples.padDashboard,
-                 captions: ["en-US": Caption(headline: "Plan your day in seconds", sub: "Smart lists that stay out of your way")], isSample: true),
+                 captions: ["en-US": Caption(headline: "Plan your day in seconds", sub: "Smart lists that stay out of your way")],
+                 phoneIsSample: true, padIsSample: true),
         ]
         selected = pages.first?.id
     }
 
     /// Tall images become iPhone pages; iPad-shaped ones fill the first page still missing an iPad shot.
+    /// Sample shots are replaced first, so the example's captions and styles carry over.
     func add(_ images: [CGImage]) {
         guard !images.isEmpty else { return }
-        if showsSample { pages.removeAll(where: \.isSample) }
         for img in images {
             if Double(img.height) / Double(img.width) >= 1.6 {
-                pages.append(Page(phone: img))
-            } else if let i = pages.firstIndex(where: { $0.pad == nil }) {
-                pages[i].pad = img
+                if let i = pages.firstIndex(where: \.phoneIsSample) { replace(i, img, pad: false) }
+                else { pages.append(Page(phone: img)) }
+            } else if let i = pages.firstIndex(where: { $0.pad == nil || $0.padIsSample }) {
+                replace(i, img, pad: true)
             } else {
                 pages.append(Page(pad: img))
             }
         }
         selected = selected ?? pages.first?.id
+    }
+
+    func replace(_ i: Int, _ img: CGImage, pad: Bool) {
+        guard pages.indices.contains(i) else { return }
+        if pad { pages[i].pad = img; pages[i].padIsSample = false }
+        else { pages[i].phone = img; pages[i].phoneIsSample = false }
+    }
+
+    func clearSample() {
+        pages.removeAll(where: \.phoneIsSample)
+        for i in pages.indices where pages[i].padIsSample { pages[i].pad = nil; pages[i].padIsSample = false }
+        if selectedIndex == nil { selected = pages.first?.id }
     }
 
     func image(_ i: Int, _ d: StoreDevice) -> CGImage? {
@@ -283,7 +313,15 @@ struct StorePage: View {
     let locale: String
     /// Overrides the model's style (used by the style gallery thumbnails).
     var style: StoreStyle? = nil
-    private var st: StoreStyle { style ?? m.style }
+    private var st: StoreStyle { style ?? m.style(index) }
+    /// Leaves room for the caption but doesn't draw it (the inline editor sits on top).
+    var hideCaption = false
+
+    var allowsCaption: Bool { m.showText && st != .noText }
+    var captionCenter: CGPoint {
+        let W = device.size.width, H = device.size.height
+        return CGPoint(x: W / 2, y: layout(W, H, true).1)
+    }
 
     private struct Placed: Identifiable { let id: Int; let image: CGImage?; let center: CGPoint; let width: CGFloat; let rotation: Double }
 
@@ -291,7 +329,7 @@ struct StorePage: View {
         let W = device.size.width, H = device.size.height
         let cap = m.caption(index, locale)
         let hasText = m.showText && st != .noText && !(cap.headline.isEmpty && (cap.sub.isEmpty || !m.showSub))
-        let (devices, textY) = layout(W, H, hasText)
+        let (devices, textY) = layout(W, H, hasText || (hideCaption && allowsCaption))
         ZStack {
             background(W, H)
             if st == .spotlight, let first = devices.first { spotlight(first, W) }
@@ -302,7 +340,7 @@ struct StorePage: View {
                     .position(p.center)
             }
             if st == .spotlight, let first = devices.first { spotlightCard(first, W) }
-            if hasText { captionView(cap, W).position(x: W / 2, y: textY) }
+            if hasText && !hideCaption { captionView(cap, W).position(x: W / 2, y: textY) }
         }
         .frame(width: W, height: H)
         .clipped()
@@ -418,6 +456,7 @@ struct StorePage: View {
 struct AppStoreToolView: View {
     @Bindable var model: StoreModel
     @Environment(AppState.self) private var state
+    @State private var editing: UUID?
 
     var body: some View {
         ToolScaffold(tool: .appstore) {
@@ -432,7 +471,7 @@ struct AppStoreToolView: View {
             .imageDrop { state.open($0) }
         } inspector: {
             screenshotsPanel
-            if let i = model.selectedIndex { pagePanel(i) }
+            if let i = model.selectedIndex { pagePanel(i, id: model.pages[i].id) }
             languagesPanel
             stylePanel
             textPanel
@@ -455,7 +494,7 @@ struct AppStoreToolView: View {
             .labelsHidden().frame(maxWidth: 170)
             Spacer(minLength: 0)
             if model.showsSample {
-                Button("Clear Sample") { model.pages.removeAll(); model.selected = nil }.controlSize(.small)
+                Button("Clear Sample") { model.clearSample() }.controlSize(.small)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -472,14 +511,39 @@ struct AppStoreToolView: View {
                 HStack(alignment: .top, spacing: 18) {
                     ForEach(Array(model.pages.enumerated()), id: \.element.id) { i, page in
                         VStack(spacing: 8) {
-                            StorePage(m: model, index: i, device: model.device, locale: model.locale)
+                            let sp = StorePage(m: model, index: i, device: model.device, locale: model.locale, hideCaption: editing == page.id)
+                            sp
                                 .scaleEffect(s, anchor: .topLeading)
                                 .frame(width: size.width * s, height: size.height * s, alignment: .topLeading)
+                                .overlay(alignment: .topLeading) {
+                                    if editing == page.id {
+                                        CaptionEditor(m: model, headline: captionBinding(page.id, \.headline), sub: captionBinding(page.id, \.sub),
+                                                      width: size.width, scale: s) { editing = nil }
+                                            .position(x: sp.captionCenter.x * s, y: sp.captionCenter.y * s)
+                                    }
+                                }
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
                                 .overlay(RoundedRectangle(cornerRadius: 6)
                                     .strokeBorder(model.selected == page.id ? Color.accentColor : .primary.opacity(0.12), lineWidth: model.selected == page.id ? 3 : 1))
                                 .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
-                                .onTapGesture { model.selected = page.id }
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2, coordinateSpace: .local) { loc in
+                                    model.selected = page.id
+                                    let y = loc.y / s
+                                    if sp.allowsCaption && abs(y - sp.captionCenter.y) < size.height * 0.09 {
+                                        editing = page.id
+                                    } else {
+                                        editing = nil
+                                        let pad = model.device.isPad
+                                        pick { model.replace(i, $0, pad: pad) }
+                                    }
+                                }
+                                .onTapGesture { model.selected = page.id; if editing != page.id { editing = nil } }
+                                .imageDrop { urls in
+                                    guard let u = urls.first, let d = try? Data(contentsOf: u), let img = ImageIOKit.load(d)?.image else { return }
+                                    let pad = Double(img.height) / Double(img.width) < 1.6
+                                    DispatchQueue.main.async { model.replace(i, img, pad: pad); model.selected = page.id }
+                                }
                                 .contextMenu { pageMenu(i) }
                             HStack(spacing: 4) {
                                 Text("\(i + 1)").font(.caption.weight(.semibold))
@@ -520,23 +584,29 @@ struct AppStoreToolView: View {
                 Button { state.open(Inbox.openPanel()) } label: { Label("Add…", systemImage: "plus") }
                 Button { state.paste() } label: { Label("Paste", systemImage: "doc.on.clipboard") }
             }
-            Text("Each iPhone screenshot becomes a page; iPad screenshots attach to pages in order. Right-click a page to reorder or replace shots.")
+            Text("Each iPhone screenshot becomes a page, filling the example's pages first. Double-click a caption to edit it, or a screenshot to replace it; you can also drop an image onto a page.")
                 .font(.caption).foregroundStyle(.secondary)
             Text("\(model.pages.count) of 10 pages").font(.caption.weight(.medium)).foregroundStyle(model.pages.count > 10 ? .red : .secondary)
         }
     }
 
-    private func pagePanel(_ i: Int) -> some View {
+    /// Caption binding keyed by page id: a text field can still commit after its page is gone.
+    private func captionBinding(_ id: UUID, _ key: WritableKeyPath<StoreModel.Caption, String>) -> Binding<String> {
+        Binding(
+            get: { model.pages.first { $0.id == id }?.captions[model.locale]?[keyPath: key] ?? "" },
+            set: { v in
+                guard let j = model.pages.firstIndex(where: { $0.id == id }) else { return }
+                model.pages[j].captions[model.locale, default: .init()][keyPath: key] = v
+            })
+    }
+
+    private func pagePanel(_ i: Int, id: UUID) -> some View {
         let primary = model.pages[i].captions[model.primary] ?? .init()
         let editingPrimary = model.locale == model.primary
         return Panel(title: "Page \(i + 1) · \(StoreLocales.name(model.locale))", symbol: "text.below.photo") {
-            TextField(editingPrimary ? "Headline" : primary.headline, text: Binding(
-                get: { model.pages[i].captions[model.locale]?.headline ?? "" },
-                set: { model.pages[i].captions[model.locale, default: .init()].headline = $0 }), axis: .vertical)
+            TextField(editingPrimary ? "Headline" : primary.headline, text: captionBinding(id, \.headline), axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(1...3)
-            TextField(editingPrimary ? "Subheadline" : primary.sub, text: Binding(
-                get: { model.pages[i].captions[model.locale]?.sub ?? "" },
-                set: { model.pages[i].captions[model.locale, default: .init()].sub = $0 }), axis: .vertical)
+            TextField(editingPrimary ? "Subheadline" : primary.sub, text: captionBinding(id, \.sub), axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(1...3)
             if !editingPrimary {
                 Text("Empty fields fall back to \(StoreLocales.name(model.primary)).").font(.caption).foregroundStyle(.secondary)
@@ -603,7 +673,12 @@ struct AppStoreToolView: View {
                     .pickerStyle(.segmented)
             }
             SliderRow(label: "Shadow", value: $model.shadow, range: 0...1.5) { "\(Int($0 * 100))%" }
-            if model.style == .spotlight {
+            if model.pages.count > 1 {
+                Button("Apply \(model.selectedStyle.rawValue) to All Pages") { withAnimation(.snappy) { model.applyStyleToAll(model.selectedStyle) } }
+                    .controlSize(.small)
+                    .disabled(model.pages.indices.allSatisfy { model.style($0) == model.selectedStyle })
+            }
+            if model.selectedStyle == .spotlight {
                 SliderRow(label: "Spotlight position", value: $model.spotY, range: 0.1...0.9) { "\(Int($0 * 100))%" }
             }
         }
@@ -611,9 +686,9 @@ struct AppStoreToolView: View {
 
     private func styleThumb(_ s: StoreStyle) -> some View {
         let size = model.device.size, w: CGFloat = 76, k = w / size.width
-        let on = model.style == s
+        let on = model.selectedStyle == s
         let i = model.selectedIndex ?? 0
-        return Button { withAnimation(.snappy) { model.style = s } } label: {
+        return Button { withAnimation(.snappy) { model.setStyle(s) } } label: {
             VStack(spacing: 4) {
                 Group {
                     if model.pages.isEmpty { RoundedRectangle(cornerRadius: 4).fill(.quaternary) }
@@ -652,7 +727,7 @@ struct AppStoreToolView: View {
             case .image:
                 Button("Choose Image…") { pick { model.bgImage = $0 } }
             }
-            if model.style == .panorama {
+            if model.selectedStyle == .panorama {
                 Text("Panorama stretches the background across all pages, so the set reads as one continuous image.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -697,5 +772,42 @@ struct AppStoreToolView: View {
             Text("Folders: language / device / 01.png … — exact pixel sizes, no transparency, ready to drag into App Store Connect.")
                 .font(.caption).foregroundStyle(.tertiary)
         }
+    }
+}
+
+/// Inline caption fields drawn over a scaled page, matching the rendered caption.
+private struct CaptionEditor: View {
+    let m: StoreModel
+    @Binding var headline: String
+    @Binding var sub: String
+    let width: CGFloat
+    let scale: CGFloat
+    let done: () -> Void
+    @FocusState private var focus: Bool?
+
+    var body: some View {
+        let k = min(width / 1290, 1.3) * scale
+        VStack(spacing: 20 * k) {
+            TextField("", text: $headline, prompt: Text("Headline").foregroundStyle(m.headline.color1.opacity(0.5)), axis: .vertical)
+                .font(.custom(m.headline.member, size: m.headline.size * k))
+                .foregroundStyle(m.headline.color1)
+                .focused($focus, equals: true)
+            if m.showSub {
+                TextField("", text: $sub, prompt: Text("Subheadline").foregroundStyle(m.subColor.opacity(0.5)), axis: .vertical)
+                    .font(.custom(m.headline.member, size: m.subSize * k))
+                    .foregroundStyle(m.subColor)
+                    .focused($focus, equals: false)
+            }
+        }
+        .textFieldStyle(.plain)
+        .multilineTextAlignment(.center)
+        .lineLimit(1...3)
+        .frame(width: width * 0.86 * scale)
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        .onAppear { focus = true }
+        .onChange(of: focus) { _, f in if f == nil { done() } }
+        .onSubmit { if focus == true && m.showSub { focus = false } else { done() } }
+        .onExitCommand { done() }
     }
 }

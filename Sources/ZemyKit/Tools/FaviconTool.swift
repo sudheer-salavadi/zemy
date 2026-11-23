@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class FaviconModel {
@@ -14,8 +15,32 @@ final class FaviconModel {
     var radius = 0.22
     var padding = 0.14
     var title = "My Website"
-    /// Last working image auto-adopted, so revisiting the tool keeps a manual Letter choice.
-    var adoptedImage: UUID?
+    /// Own source, independent of the shared working image.
+    var image: CGImage?
+    var imageName = ""
+
+    static let types: [UTType] = [.png, .svg]
+
+    func load(_ urls: [URL]) {
+        guard let url = Inbox.expand(urls).first(where: { ["png", "svg"].contains($0.pathExtension.lowercased()) }) else { return }
+        let name = url.deletingPathExtension().lastPathComponent
+        Task {
+            let img: CGImage?
+            if url.pathExtension.lowercased() == "svg" {
+                guard let src = try? String(contentsOf: url, encoding: .utf8) else { return }
+                let probe = SVGModel()
+                probe.source = src
+                let size = probe.size
+                img = await SVGRenderer.render(src, size: size, scale: 1024 / max(size.width, size.height))
+            } else {
+                img = (try? Data(contentsOf: url)).flatMap(ImageIOKit.load)?.image
+            }
+            guard let img else { return }
+            image = img
+            imageName = name
+            source = .image
+        }
+    }
 
     static let snippet = """
     <link rel="icon" href="/favicon.ico" sizes="any">
@@ -39,9 +64,9 @@ struct FaviconArt: View {
                 if m.source == .image, let image {
                     Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fit)
                 } else {
-                    Text(m.glyph.isEmpty ? " " : String(m.glyph.prefix(2)))
+                    Text(m.glyph.isEmpty ? " " : m.glyph)
                         .font(.custom(m.member, size: side * 0.72))
-                        .minimumScaleFactor(0.2).lineLimit(1)
+                        .minimumScaleFactor(0.05).lineLimit(1)
                         .foregroundStyle(m.glyphColor)
                 }
             }
@@ -128,7 +153,7 @@ struct FaviconToolView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        let image = state.current?.image
+        let image = model.image
         let master = FaviconArt.render(model, image)
         // Real 32 px pixels, shown at 16 pt — exactly what a Retina tab displays.
         let tabIcon = master?.resized(to: CGSize(width: 32, height: 32))
@@ -137,7 +162,7 @@ struct FaviconToolView: View {
                 BrowserTabs(icon: tabIcon, title: model.title, dark: false)
                 BrowserTabs(icon: tabIcon, title: model.title, dark: true)
                 if model.source == .image && image == nil {
-                    DropZone(tool: .favicon, multiple: false) { state.open($0) }
+                    DropZone(tool: .favicon, multiple: false, types: FaviconModel.types) { model.load($0) }
                 } else if let master {
                     HStack(alignment: .bottom, spacing: 26) {
                         ForEach([180, 64, 48, 32, 16], id: \.self) { s in
@@ -168,8 +193,16 @@ struct FaviconToolView: View {
                     }
                     FontPicker(family: $model.family, member: $model.member)
                 } else {
-                    Text(image == nil ? "Drop, paste or choose an image." : "Using the working image “\(state.current?.name ?? "")”.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if image != nil {
+                        Text(model.imageName).font(.callout).lineLimit(1).truncationMode(.middle)
+                    }
+                    HStack {
+                        Button {
+                            model.load(Inbox.openPanel(multiple: false, types: FaviconModel.types))
+                        } label: { Label(image == nil ? "Upload PNG or SVG…" : "Replace…", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
+                        if image != nil { Button("Remove") { model.image = nil; model.imageName = "" } }
+                    }
+                    Text("Or drop a PNG or SVG onto the window.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             Panel(title: "Tile", symbol: "app") {
@@ -197,9 +230,6 @@ struct FaviconToolView: View {
                 CopyButton(text: { FaviconModel.snippet }, label: "Copy HTML snippet").buttonStyle(.borderless)
             }
             ExportPanel(id: "favicon", name: "favicon", formats: [.png, .ico, .webp, .icns]) { _ in master }
-        }
-        .onChange(of: state.current?.id, initial: true) { _, id in
-            if let id, id != model.adoptedImage { model.adoptedImage = id; model.source = .image }
         }
     }
 }

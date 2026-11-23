@@ -39,6 +39,17 @@ enum Inbox {
         return (try? data.write(to: url)) == nil ? nil : url
     }
 
+    /// Files we hand out for drag-out; dropping one back on Zemy is a no-op, not a new import.
+    @MainActor private static var vended = Set<String>()
+
+    @MainActor static func dragOut(_ data: Data, name: String, ext: String) -> URL? {
+        let url = temp(data, name: name, ext: ext)
+        if let url { vended.insert(url.resolvingSymlinksInPath().path) }
+        return url
+    }
+
+    @MainActor static func isDragOut(_ url: URL) -> Bool { vended.contains(url.resolvingSymlinksInPath().path) }
+
     /// Folders are expanded to the images (or, with `imagesOnly: false`, all visible files) inside them.
     static func expand(_ urls: [URL], imagesOnly: Bool = true) -> [URL] {
         urls.flatMap { url -> [URL] in
@@ -133,7 +144,10 @@ enum Inbox {
 extension View {
     func imageDrop(isTargeted: Binding<Bool>? = nil, perform: @escaping ([URL]) -> Void) -> some View {
         onDrop(of: [.fileURL, .image], isTargeted: isTargeted) { providers in
-            Inbox.load(providers, perform)
+            Inbox.load(providers) { urls in
+                let fresh = urls.filter { !Inbox.isDragOut($0) }
+                if !fresh.isEmpty { perform(fresh) }
+            }
             return true
         }
     }
@@ -230,6 +244,8 @@ struct CompareView: View {
     let before: CGImage
     let after: CGImage?
     var labels = ("Original", "Result")
+    /// Screen-sized stand-ins drawn until zoomed past their resolution; full-res textures are slow to upload.
+    var previews: (CGImage, CGImage?)? = nil
     @State private var splitX: CGFloat? // canvas coordinates; nil = centred
 
     var body: some View {
@@ -238,11 +254,12 @@ struct CompareView: View {
             ZoomCanvas(size: before.size) { k in
                 GeometryReader { g in
                     let local = min(max(x - g.frame(in: .named("compareCanvas")).minX, 0), g.size.width)
+                    let p = previews.flatMap { CGFloat($0.0.width) >= g.size.width * 2 ? $0 : nil }
                     ZStack(alignment: .topLeading) {
-                        PixelImage(image: before, scale: k)
+                        PixelImage(image: p?.0 ?? before, scale: k)
                             .mask(alignment: .leading) { Rectangle().frame(width: after == nil ? g.size.width : local) }
                         if let after {
-                            PixelImage(image: after, scale: k)
+                            PixelImage(image: p?.1 ?? after, scale: k)
                                 .mask(alignment: .trailing) { Rectangle().frame(width: g.size.width - local) }
                         }
                     }

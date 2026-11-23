@@ -159,6 +159,7 @@ struct ColorToolView: View {
             Button { model.sampleScreen() } label: { Label("Pick from Screen", systemImage: "eyedropper") }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .help("Sample any pixel on any screen (⇧⌘P)")
+            if state.current != nil { Button { state.current = nil } label: { Label("Clear", systemImage: "trash") } }
         }
     }
 

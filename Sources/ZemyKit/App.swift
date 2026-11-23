@@ -28,7 +28,7 @@ public struct ZemyApp: App {
                 Button("Open…") { state.open(Inbox.openPanel()) }.keyboardShortcut("o")
             }
             CommandMenu("Tools") {
-                ForEach(Array(Tool.allCases.enumerated()), id: \.element) { i, tool in
+                ForEach(Array(Tool.visible.enumerated()), id: \.element) { i, tool in
                     if i < 9 {
                         Button(tool.title) { state.tool = tool }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")))
                     } else {
@@ -40,12 +40,14 @@ public struct ZemyApp: App {
 
         // Clipboard history in the menu bar (can be hidden from the Clipboard tool).
         // MenuBarExtra echoes isInserted on every update; writing it unconditionally loops via UserDefaults.
-        MenuBarExtra("Zemy Clipboard", systemImage: "doc.on.clipboard", isInserted: Binding(
+        MenuBarExtra(isInserted: Binding(
             get: { showMenuBar },
             set: { if $0 != showMenuBar { showMenuBar = $0 } }
         )) {
             ClipboardMenuBarView(model: state.clipboard) { state.showClipboard() }
                 .environment(state)
+        } label: {
+            Image(nsImage: .zemyMenuBar).accessibilityLabel("Zemy Clipboard")
         }
         .menuBarExtraStyle(.window)
     }
@@ -130,8 +132,11 @@ enum Tool: String, CaseIterable, Identifiable {
     var isBatch: Bool { [.compress, .convert].contains(self) }
     var takesImage: Bool { isBatch || [.background, .colors, .icons, .favicon, .showcase, .appstore].contains(self) }
 
+    // .icons hidden until Android adaptive layers are supported
+    static let visible = allCases.filter { $0 != .icons }
+
     static let groups: [(String, [Tool])] = [
-        ("Create", [.showcase, .appstore, .svg, .icons, .favicon]),
+        ("Create", [.showcase, .appstore, .svg, .favicon]),
         ("Batch", [.compress, .convert, .rename]),
         ("Inspect & Edit", [.background, .colors]),
         ("Utilities", [.clipboard]),
@@ -178,6 +183,7 @@ final class AppState {
 
     func open(_ urls: [URL]) {
         if tool == .rename { rename.add(urls); return }
+        if tool == .favicon { favicon.load(urls); return }
         if tool == .showcase || tool == .appstore {
             let files = Inbox.expand(urls), target = tool
             Task.detached {
@@ -267,7 +273,6 @@ struct ContentView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 230)
-            .safeAreaInset(edge: .bottom) { CurrentImageChip() }
         } detail: {
             detail.id(state.tool)
         }
@@ -291,30 +296,6 @@ struct ContentView: View {
     }
 }
 
-/// Shows the shared working image at the bottom of the sidebar.
-struct CurrentImageChip: View {
-    @Environment(AppState.self) private var state
-    var body: some View {
-        if let cur = state.current {
-            HStack(spacing: 10) {
-                PixelImage(image: cur.image).aspectRatio(contentMode: .fill)
-                    .frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 7))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(cur.name).font(.caption.weight(.medium)).lineLimit(1)
-                    Text(cur.image.size.dims).font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { state.current = nil } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.borderless).foregroundStyle(.secondary)
-            }
-            .padding(8)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-            .padding(10)
-            .help("Working image — shared by Remove Background, Colors and App Icons")
-        }
-    }
-}
-
 /// Wraps single-image tools: drop zone until there is a working image.
 struct SingleImageTool<Canvas: View, Inspector: View>: View {
     let tool: Tool
@@ -331,7 +312,35 @@ struct SingleImageTool<Canvas: View, Inspector: View>: View {
         .toolbar {
             if state.current != nil {
                 Button { state.open(Inbox.openPanel(multiple: false)) } label: { Label("Replace Image", systemImage: "photo.badge.plus") }
+                Button { state.current = nil } label: { Label("Clear", systemImage: "trash") }
             }
         }
     }
+}
+
+extension NSImage {
+    /// Template glyph of the app icon's multitool: handle plus three blades fanned from one rivet.
+    static let zemyMenuBar: NSImage = {
+        let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            let ctx = NSGraphicsContext.current!.cgContext
+            let pivot = CGPoint(x: 3.5, y: 3.5)
+            func pill(_ deg: CGFloat, length: CGFloat, width: CGFloat) {
+                ctx.saveGState()
+                ctx.translateBy(x: pivot.x, y: pivot.y)
+                ctx.rotate(by: deg * .pi / 180)
+                ctx.addPath(CGPath(roundedRect: CGRect(x: -width / 2, y: -width / 2, width: length + width / 2, height: width),
+                                   cornerWidth: width / 2, cornerHeight: width / 2, transform: nil))
+                ctx.fillPath()
+                ctx.restoreGState()
+            }
+            ctx.setFillColor(.black)
+            pill(4, length: 13, width: 4)
+            for deg: CGFloat in [32, 58, 84] { pill(deg, length: 12, width: 2.4) }
+            ctx.setBlendMode(.clear)
+            ctx.fillEllipse(in: CGRect(x: pivot.x - 0.9, y: pivot.y - 0.9, width: 1.8, height: 1.8))
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }()
 }

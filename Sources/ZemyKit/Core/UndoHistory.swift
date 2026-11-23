@@ -193,19 +193,21 @@ extension SVGModel {
 extension FaviconModel {
     struct State: Equatable {
         var source: Source, glyph: String, glyphColor: Color, family: String, member: String
-        var tile: Bool, tileColor: Color, radius: Double, padding: Double, title: String
+        var tile: Bool, tileFill: Fill, tileColor: Color, tileColor2: Color, mesh: MeshModel.State
+        var radius: Double, padding: Double, title: String
         var image: CGImage?, imageName: String
     }
     var state: State {
         get {
             State(source: source, glyph: glyph, glyphColor: glyphColor, family: family, member: member,
-                  tile: tile, tileColor: tileColor, radius: radius, padding: padding, title: title,
+                  tile: tile, tileFill: tileFill, tileColor: tileColor, tileColor2: tileColor2, mesh: mesh.state, radius: radius, padding: padding, title: title,
                   image: image, imageName: imageName)
         }
         set {
             source = newValue.source; glyph = newValue.glyph; glyphColor = newValue.glyphColor
             family = newValue.family; member = newValue.member
-            tile = newValue.tile; tileColor = newValue.tileColor; radius = newValue.radius
+            tile = newValue.tile; tileFill = newValue.tileFill; tileColor = newValue.tileColor
+            tileColor2 = newValue.tileColor2; mesh.state = newValue.mesh; radius = newValue.radius
             padding = newValue.padding; title = newValue.title
             image = newValue.image; imageName = newValue.imageName
         }

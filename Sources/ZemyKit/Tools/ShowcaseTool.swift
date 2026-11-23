@@ -145,6 +145,23 @@ final class ShowcaseModel {
         selected = copy.id
     }
 
+    /// Swaps a screenshot's image, keeping its place, size and rotation.
+    func replace(_ id: UUID, with img: CGImage) {
+        guard let i = layers.firstIndex(where: { $0.id == id }), !layers[i].isText else { return }
+        layers[i].image = img
+        layers[i].corner = Self.corner(for: img)
+        layers[i].isSample = false
+        selected = id
+        relayout()
+    }
+
+    /// Asks for a file and swaps it into the given screenshot layer.
+    func chooseReplacement(for id: UUID) {
+        guard let u = Inbox.openPanel(multiple: false, types: [.image]).first,
+              let d = try? Data(contentsOf: u), let img = ImageIOKit.load(d)?.image else { return }
+        replace(id, with: img)
+    }
+
     func delete() {
         layers.removeAll { $0.id == selected }
         selected = layers.last?.id
@@ -528,7 +545,9 @@ private struct ShowcaseEditor: View {
                             update(l.id) { $0.center = CGPoint(x: origin!.x + v.translation.width / W, y: origin!.y + v.translation.height / H) }
                         }
                         .onEnded { _ in origin = nil })
+                    .onTapGesture(count: 2) { if !l.isText { m.chooseReplacement(for: l.id) } }
                     .onTapGesture { m.selected = l.id }
+                    .help(l.isText ? "" : "Double-click to replace")
                     .rotationEffect(.degrees(l.rotation))
                     .position(x: l.center.x * W, y: l.center.y * H)
             }
@@ -655,6 +674,10 @@ struct ShowcaseToolView: View {
                     orderButton("square.2.layers.3d.bottom.filled", "Send backward", .backward)
                     orderButton("square.3.layers.3d.bottom.filled", "Send to back", .back)
                     Spacer()
+                    if !model.layers[i].isText {
+                        let id = model.layers[i].id
+                        Button { model.chooseReplacement(for: id) } label: { Image(systemName: "photo.badge.arrow.down") }.help("Replace image (or double-click it)")
+                    }
                     Button { model.duplicate() } label: { Image(systemName: "plus.square.on.square") }.help("Duplicate")
                     Button(role: .destructive) { model.delete() } label: { Image(systemName: "trash") }.help("Delete (⌫)")
                 }

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor @Observable
 final class FaviconModel {
     enum Source: String, CaseIterable, Identifiable { case image = "Image", glyph = "Letter / Emoji"; var id: Self { self } }
+    enum Fill: String, CaseIterable, Identifiable { case mesh = "Mesh", gradient = "Gradient", color = "Color"; var id: Self { self } }
 
     var source = Source.glyph
     var glyph = "P"
@@ -11,7 +12,10 @@ final class FaviconModel {
     var family = "Avenir Next"
     var member = "AvenirNext-Bold"
     var tile = true
+    var tileFill = Fill.color
     var tileColor = Color(red: 0.36, green: 0.33, blue: 0.95)
+    var tileColor2 = Color(red: 0.08, green: 0.06, blue: 0.2)
+    let mesh = MeshModel()
     var radius = 0.22
     var padding = 0.14
     var title = "My Website"
@@ -58,7 +62,14 @@ struct FaviconArt: View {
         let side: CGFloat = 512
         ZStack {
             if m.tile {
-                RoundedRectangle(cornerRadius: side * m.radius, style: .continuous).fill(m.tileColor)
+                Group {
+                    switch m.tileFill {
+                    case .mesh: MeshArt(m: m.mesh)
+                    case .gradient: LinearGradient(colors: [m.tileColor, m.tileColor2], startPoint: .top, endPoint: .bottom)
+                    case .color: m.tileColor
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: side * m.radius, style: .continuous))
             }
             Group {
                 if m.source == .image, let image {
@@ -208,7 +219,14 @@ struct FaviconToolView: View {
             Panel(title: "Tile", symbol: "app") {
                 Toggle("Background tile", isOn: $model.tile)
                 if model.tile {
-                    ColorPicker("Color", selection: $model.tileColor)
+                    Picker("Fill", selection: $model.tileFill) { ForEach(FaviconModel.Fill.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.segmented).labelsHidden()
+                    switch model.tileFill {
+                    case .mesh: MeshPanel(m: model.mesh)
+                    case .gradient:
+                        HStack { ColorPicker("From", selection: $model.tileColor); ColorPicker("to", selection: $model.tileColor2) }
+                    case .color: ColorPicker("Color", selection: $model.tileColor)
+                    }
                     SliderRow(label: "Corner radius", value: $model.radius, range: 0...0.5) { $0 >= 0.5 ? "Circle" : "\(Int($0 * 200))%" }
                 }
                 SliderRow(label: "Padding", value: $model.padding, range: 0...0.35) { "\(Int($0 * 100))%" }

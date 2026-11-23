@@ -16,6 +16,7 @@ public struct ZemyApp: App {
                 .onAppear {
                     delegate.state = state
                     state.installPasteMonitor()
+                    state.startHistories()
                     #if DEBUG
                     state.runSnapshotsIfRequested()
                     #endif
@@ -24,6 +25,10 @@ public struct ZemyApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { state.undo() }.keyboardShortcut("z")
+                Button("Redo") { state.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandGroup(after: .newItem) {
                 Button("Open…") { state.open(Inbox.openPanel()) }.keyboardShortcut("o")
             }
@@ -180,6 +185,28 @@ final class AppState {
     let icons = IconModel()
     let favicon = FaviconModel()
     let rename = RenameModel()
+
+    @ObservationIgnored private lazy var histories: [Tool: any UndoTracking] = {
+        var h: [Tool: any UndoTracking] = [
+            .showcase: UndoHistory { [showcase] in showcase.state } set: { [showcase] in showcase.state = $0 },
+            .appstore: UndoHistory { [store] in store.state } set: { [store] in store.state = $0 },
+            .svg: UndoHistory { [svg] in svg.state } set: { [svg] in svg.state = $0 },
+            .favicon: UndoHistory { [favicon] in favicon.state } set: { [favicon] in favicon.state = $0 },
+            .icons: UndoHistory { [icons] in icons.state } set: { [icons] in icons.state = $0 },
+            .background: UndoHistory { [background] in background.state } set: { [background] in background.state = $0 },
+            .colors: UndoHistory { [colors] in colors.state } set: { [colors] in colors.state = $0 },
+            .rename: UndoHistory { [rename] in rename.state } set: { [rename] in rename.state = $0 },
+        ]
+        for (tool, batch) in batches { h[tool] = UndoHistory { batch.state } set: { batch.state = $0 } }
+        return h
+    }()
+
+    func startHistories() { _ = histories }
+
+    /// Text fields keep their own undo; everything else steps the current tool's history.
+    func undo() { if editing { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) } else { histories[tool]?.undo() } }
+    func redo() { if editing { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) } else { histories[tool]?.redo() } }
+    private var editing: Bool { !(NSApp.keyWindow === NSApp.mainWindow) || NSApp.keyWindow?.firstResponder is NSText }
 
     func open(_ urls: [URL]) {
         if tool == .rename { rename.add(urls); return }

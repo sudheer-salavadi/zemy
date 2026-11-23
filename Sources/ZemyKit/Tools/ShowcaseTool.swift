@@ -14,7 +14,7 @@ final class ShowcaseModel {
     enum Arrangement: Equatable { case builtIn(Layout), saved(UUID), manual }
 
     /// A screenshot (image) or a text layer (text); position and size are fractions of the canvas.
-    struct Layer: Identifiable {
+    struct Layer: Identifiable, Equatable {
         var id = UUID()
         var image: CGImage?
         var text: TextStyle?

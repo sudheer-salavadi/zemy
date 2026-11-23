@@ -49,7 +49,7 @@ enum StoreLocales {
 @MainActor @Observable
 final class StoreModel {
     struct Caption: Equatable { var headline = "", sub = "" }
-    struct Page: Identifiable {
+    struct Page: Identifiable, Equatable {
         let id = UUID()
         var phone: CGImage?
         var pad: CGImage?

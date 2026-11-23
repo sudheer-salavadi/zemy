@@ -7,7 +7,7 @@
 Showcase screenshots, make App Store screenshot sets, keep a clipboard history, compress and convert images, rename files, remove backgrounds, pick colors and make icons, all on your Mac, with nothing uploaded.</p>
 
 <p align="center">
-  <a href="../../releases/latest"><b>⬇︎ Download the latest release</b></a>
+  <a href="https://apps.apple.com/app/zemy/id6832416499"><b>Download on the Mac App Store</b></a>
 </p>
 
 ![Showcase: compose screenshots and type over gradients](docs/showcase.png)
@@ -36,6 +36,10 @@ Showcase screenshots, make App Store screenshot sets, keep a clipboard history, 
 
 ## Install
 
+Get Zemy from the **[Mac App Store](https://apps.apple.com/app/zemy/id6832416499)**. It installs and updates like any other app.
+
+### Or download from GitHub
+
 1. Download **`Zemy-x.y.zip`** from the [latest release](../../releases/latest) and unzip it.
 2. Drag **Zemy.app** into your **Applications** folder.
 3. **First launch only:** Zemy isn't notarized by Apple yet, so macOS says *"Apple could not verify “Zemy.app” is free of malware"*. Click **Done** (not *Move to Trash*), then either:
@@ -54,7 +58,7 @@ Each release lists a SHA-256 checksum. In Terminal:
 shasum -a 256 ~/Downloads/Zemy-1.1.zip
 ```
 
-The result should match the checksum on the release page. Only download Zemy from this repository's Releases page.
+The result should match the checksum on the release page. Only download Zemy from the Mac App Store or this repository's Releases page.
 
 ## Privacy
 

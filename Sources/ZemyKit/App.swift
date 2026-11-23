@@ -240,11 +240,29 @@ final class AppState {
         return false
     }
 
+    private func deleteSelection() -> Bool {
+        switch tool {
+        case .showcase:
+            guard showcase.selected != nil else { return false }
+            showcase.delete(); return true
+        case .appstore:
+            return store.deleteSelected()
+        default:
+            return false
+        }
+    }
+
     private var monitor: Any?
     func installPasteMonitor() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            guard let self, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            guard let self else { return e }
+            // Delete / forward delete remove the selected layer or page, unless a text field is editing.
+            if [51, 117].contains(e.keyCode), e.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+               let w = NSApp.keyWindow, w === NSApp.mainWindow, !(w.firstResponder is NSText) {
+                return self.deleteSelection() ? nil : e
+            }
+            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                   e.charactersIgnoringModifiers == "v",
                   !(NSApp.keyWindow?.firstResponder is NSText) else { return e }
             return self.paste() ? nil : e

@@ -145,6 +145,13 @@ final class StoreModel {
         else { pages[i].phone = img; pages[i].phoneIsSample = false }
     }
 
+    func deleteSelected() -> Bool {
+        guard let i = selectedIndex else { return false }
+        pages.remove(at: i)
+        selected = pages.indices.contains(i) ? pages[i].id : pages.last?.id
+        return true
+    }
+
     func clearSample() {
         pages.removeAll(where: \.phoneIsSample)
         for i in pages.indices where pages[i].padIsSample { pages[i].pad = nil; pages[i].padIsSample = false }
